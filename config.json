@@ -1,0 +1,123 @@
+{
+  "symbol": "ETHUSDT",
+  "strategy_profile": "balanced",
+  "runtime": {
+    "poll_interval_seconds": 60,
+    "http_timeout_seconds": 12,
+    "kline_limit": 320
+  },
+  "notification": {
+    "enabled": false,
+    "channel": "imessage",
+    "target": "",
+    "reply_language": "en",
+    "cooldown_minutes": 30,
+    "min_score_to_alert": 68,
+    "max_alerts_per_day": 6,
+    "min_price_move_percent_for_repeat": 1.2,
+    "quiet_hours": {
+      "enabled": true,
+      "start_hour": 23,
+      "end_hour": 8,
+      "override_for_buy_trigger": true
+    },
+    "chart": {
+      "enabled": true,
+      "bars": 48,
+      "path": "state/latest-chart.svg"
+    },
+    "active_windows": {
+      "enabled": true,
+      "windows": [
+        "08:00-12:00",
+        "20:00-02:00"
+      ],
+      "override_for_buy_trigger": true
+    },
+    "followup_tracking": {
+      "enabled": true,
+      "duration_minutes": 30,
+      "interval_minutes": 10,
+      "min_move_percent": 0.6,
+      "only_when_position_open": false
+    }
+  },
+  "rules": {
+    "near_buy_score": 68,
+    "buy_trigger_score": 84,
+    "pullback_max_atr_distance": 0.75,
+    "pullback_rsi_min": 44,
+    "pullback_rsi_max": 63,
+    "breakout_volume_multiple": 1.4,
+    "reclaim_rsi_min": 48,
+    "reversal_rsi_floor": 38,
+    "reversal_volume_multiple": 1.15,
+    "max_extension_atr": 1.4,
+    "stop_atr_multiplier": 1.3,
+    "breakout_lookback_bars": 20,
+    "ema_slope_lookback": 3,
+    "position_size_hint": "8%-12%",
+    "take_profit_rr_1": 1.5,
+    "take_profit_rr_2": 2.3
+  },
+  "profiles": {
+    "scalp": {
+      "runtime": {
+        "poll_interval_seconds": 45
+      },
+      "notification": {
+        "cooldown_minutes": 20,
+        "min_score_to_alert": 64,
+        "max_alerts_per_day": 10,
+        "min_price_move_percent_for_repeat": 0.8
+      },
+      "rules": {
+        "near_buy_score": 64,
+        "buy_trigger_score": 78,
+        "pullback_max_atr_distance": 0.95,
+        "breakout_volume_multiple": 1.25,
+        "max_extension_atr": 1.65,
+        "stop_atr_multiplier": 1.05,
+        "position_size_hint": "6%-10%"
+      }
+    },
+    "balanced": {
+      "runtime": {
+        "poll_interval_seconds": 60
+      },
+      "notification": {
+        "cooldown_minutes": 30,
+        "min_score_to_alert": 68,
+        "max_alerts_per_day": 6
+      },
+      "rules": {
+        "near_buy_score": 68,
+        "buy_trigger_score": 84,
+        "pullback_max_atr_distance": 0.75,
+        "breakout_volume_multiple": 1.4,
+        "stop_atr_multiplier": 1.3,
+        "position_size_hint": "8%-12%"
+      }
+    },
+    "swing": {
+      "runtime": {
+        "poll_interval_seconds": 90
+      },
+      "notification": {
+        "cooldown_minutes": 60,
+        "min_score_to_alert": 72,
+        "max_alerts_per_day": 4,
+        "min_price_move_percent_for_repeat": 1.8
+      },
+      "rules": {
+        "near_buy_score": 72,
+        "buy_trigger_score": 88,
+        "pullback_max_atr_distance": 0.55,
+        "breakout_volume_multiple": 1.55,
+        "max_extension_atr": 1.15,
+        "stop_atr_multiplier": 1.5,
+        "position_size_hint": "10%-15%"
+      }
+    }
+  }
+}
