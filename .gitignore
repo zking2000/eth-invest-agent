@@ -1,5 +1,6 @@
 state/runtime.json
 state/latest-chart.svg
 state/daemon.log
+state/daemon.err.log
 __pycache__/
 .DS_Store
