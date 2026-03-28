@@ -98,6 +98,8 @@ python3 ./scripts/eth_watcher.py daemon
 - 仓位建议
 - 强度评分
 
+即使当天没有触发买点，daemon 也可以按固定时间发送一条“每日市场评价与预测”。仓库里的默认示例配置是每天 `09:00` 发送一条。
+
 ### 3. 通过 iMessage 主动提问
 
 项目里包含一个 OpenClaw hook，你可以直接给它发消息，让它回复，而不是只等它推送提醒。
@@ -240,6 +242,7 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
 - `notification.active_windows`：允许提醒的时间窗口
 - `notification.quiet_hours`：静默时间段
 - `notification.followup_tracking`：提醒后跟踪逻辑
+- `notification.daily_summary`：每日固定时段市场评价与预测
 
 仓库内提供的 `config.json` 是为开源使用准备的：
 
@@ -258,6 +261,27 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
   }
 }
 ```
+
+每日市场评价配置示例：
+
+```json
+{
+  "notification": {
+    "daily_summary": {
+      "enabled": true,
+      "send_times": ["09:00"],
+      "llm_enabled": true
+    }
+  }
+}
+```
+
+它的工作方式是：
+
+- daemon 每轮都会检查是否到了设定发送时间
+- 只要当天设定时间已过且当天还没发过，就会补发一条
+- LLM 负责生成市场评价和短线预测
+- 如果 LLM 调用失败，会自动降级成本地规则总结
 
 ## 策略档位
 

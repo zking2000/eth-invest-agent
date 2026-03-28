@@ -40,6 +40,17 @@
       "interval_minutes": 10,
       "min_move_percent": 0.6,
       "only_when_position_open": false
+    },
+    "daily_summary": {
+      "enabled": true,
+      "send_times": [
+        "09:00"
+      ],
+      "attach_chart": true,
+      "llm_enabled": true,
+      "llm_timeout_seconds": 120,
+      "openclaw_agent_id": "eth-daily-summary",
+      "thinking": "off"
     }
   },
   "rules": {

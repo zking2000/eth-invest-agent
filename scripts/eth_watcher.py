@@ -53,6 +53,19 @@ def resolve_openclaw_bin() -> str:
     return "/opt/homebrew/bin/openclaw"
 
 
+def build_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    path_parts: list[str] = []
+    for part in ["/opt/homebrew/bin", "/usr/local/bin", env.get("PATH", "")]:
+        if not part:
+            continue
+        for entry in str(part).split(":"):
+            if entry and entry not in path_parts:
+                path_parts.append(entry)
+    env["PATH"] = ":".join(path_parts)
+    return env
+
+
 def infer_default_target() -> str | None:
     candidates = [
         Path.home() / ".clawdbot" / "clawdbot.json",
@@ -110,6 +123,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "interval_minutes": 10,
             "min_move_percent": 0.6,
             "only_when_position_open": False,
+        },
+        "daily_summary": {
+            "enabled": True,
+            "send_times": ["09:00"],
+            "attach_chart": True,
+            "llm_enabled": True,
+            "llm_timeout_seconds": 120,
+            "openclaw_agent_id": "eth-daily-summary",
+            "thinking": "off",
         },
     },
     "rules": {
@@ -271,6 +293,10 @@ def load_state(path: Path) -> dict[str, Any]:
                 "chat": {
                     "processed_message_ids": [],
                 },
+                "daily_summary": {
+                    "sent_keys": [],
+                    "last_llm_usage": {},
+                },
             },
         )
     )
@@ -297,11 +323,25 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
             "processed_message_ids": [],
         },
     )
+    state.setdefault(
+        "daily_summary",
+        {
+            "sent_keys": [],
+            "last_llm_usage": {},
+        },
+    )
     chat = state["chat"]
     processed_ids = chat.get("processed_message_ids", [])
     if not isinstance(processed_ids, list):
         processed_ids = []
     chat["processed_message_ids"] = [str(item) for item in processed_ids[-40:] if str(item)]
+    daily_summary = state["daily_summary"]
+    sent_keys = daily_summary.get("sent_keys", [])
+    if not isinstance(sent_keys, list):
+        sent_keys = []
+    daily_summary["sent_keys"] = [str(item) for item in sent_keys[-30:] if str(item)]
+    if not isinstance(daily_summary.get("last_llm_usage"), dict):
+        daily_summary["last_llm_usage"] = {}
     return state
 
 
@@ -1316,6 +1356,280 @@ def build_message(analysis: dict[str, Any], locale: str = "en") -> str:
     return "\n".join(lines)
 
 
+def infer_forecast_bias(analysis: dict[str, Any]) -> tuple[str, str]:
+    regime = str(analysis.get("market_regime", "Range"))
+    label = str(analysis.get("label", "watch"))
+    signal = str(analysis.get("primary_signal", "watch"))
+    score = int(analysis.get("score", 0))
+    conditions = analysis.get("conditions", {})
+    bullish_count = sum(
+        [
+            bool(conditions.get("regime_bull")),
+            bool(conditions.get("macro_bull")),
+            bool(conditions.get("confirm_bull")),
+            bool(conditions.get("fast_bull")),
+        ]
+    )
+    if label == "buy_trigger" and score >= 84:
+        return "bullish", "high"
+    if label == "near_buy" and bullish_count >= 2:
+        return "bullish", "medium"
+    if signal == "breakout" and bool(conditions.get("breakout")):
+        return "bullish", "medium"
+    if regime in {"强多头", "偏多"}:
+        return "bullish", "medium"
+    if regime in {"偏弱", "弱势"}:
+        return "bearish", "medium"
+    return "range", "low"
+
+
+def build_key_levels(analysis: dict[str, Any]) -> dict[str, float]:
+    metrics = analysis.get("metrics", {})
+    support = min(
+        float(analysis["stop_loss"]),
+        float(metrics.get("15m_ema20", analysis["stop_loss"])),
+        float(metrics.get("5m_ema20", analysis["stop_loss"])),
+    )
+    resistance = max(
+        float(metrics.get("15m_breakout_level", analysis["price"])),
+        float(analysis["take_profit"]["tp1"]),
+    )
+    return {
+        "support": round(support, 2),
+        "resistance": round(resistance, 2),
+    }
+
+
+def build_daily_summary_payload(analysis: dict[str, Any], state: dict[str, Any], locale: str) -> dict[str, Any]:
+    bias, confidence = infer_forecast_bias(analysis)
+    levels = build_key_levels(analysis)
+    return {
+        "locale": locale,
+        "symbol": analysis["symbol"],
+        "generated_at": analysis["generated_at"],
+        "price": round(float(analysis["price"]), 2),
+        "label": analysis["label"],
+        "signal": analysis["primary_signal"],
+        "signal_name": localize_signal_name(analysis["primary_signal"], locale),
+        "market_regime": localize_market_regime(analysis["market_regime"], locale),
+        "score": int(analysis["score"]),
+        "entry_zone": build_entry_zone_display(analysis, locale),
+        "entry_hint": build_entry_hint_display(analysis, locale),
+        "position_size_hint": analysis["position_size_hint"],
+        "stop_loss": round(float(analysis["stop_loss"]), 2),
+        "take_profit_1": round(float(analysis["take_profit"]["tp1"]), 2),
+        "take_profit_2": round(float(analysis["take_profit"]["tp2"]), 2),
+        "forecast_bias": bias,
+        "forecast_confidence": confidence,
+        "support": levels["support"],
+        "resistance": levels["resistance"],
+        "position_active": bool(analysis.get("position_active")),
+        "position_entry_price": round(float(analysis.get("position_entry_price", analysis["entry_reference"])), 2),
+        "reasons": localize_reasons(analysis.get("reasons", [])[:4], locale),
+        "metrics": analysis.get("metrics", {}),
+        "last_alert_date": state.get("last_sent", {}).get("date"),
+    }
+
+
+def build_daily_summary_prompt(payload: dict[str, Any], locale: str) -> str:
+    language_text = "Simplified Chinese" if locale == "zh" else "English"
+    return "\n".join(
+        [
+            "You are an ETH market review assistant writing a daily brief for an active trader.",
+            "Use ONLY the structured data below.",
+            "Do not use tools, do not browse, and do not mention missing data or missing context.",
+            f"Write in {language_text}.",
+            "Return plain text only, no markdown fences.",
+            "Keep it under 700 characters.",
+            "Be concrete, not generic. Mention exact levels and a clear action bias.",
+            "Must include:",
+            "1. A one-line market stance.",
+            "2. A next-24h forecast with confidence.",
+            "3. Key support and resistance.",
+            "4. Whether to act now, wait, or only probe small.",
+            "5. One main risk to watch.",
+            "",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        ]
+    )
+
+
+def build_local_daily_summary(analysis: dict[str, Any], state: dict[str, Any], locale: str) -> str:
+    bias, confidence = infer_forecast_bias(analysis)
+    levels = build_key_levels(analysis)
+    bias_text = {
+        "bullish": tr(locale, "偏多", "bullish bias"),
+        "bearish": tr(locale, "偏弱", "bearish bias"),
+        "range": tr(locale, "震荡", "range-bound"),
+    }[bias]
+    confidence_text = {
+        "high": tr(locale, "高", "high"),
+        "medium": tr(locale, "中", "medium"),
+        "low": tr(locale, "低", "low"),
+    }[confidence]
+    action_text = build_small_position_advice(analysis, locale)
+    lines = [
+        tr(locale, "【ETH日报】市场评价与预测", "[ETH Daily] Market Review and Forecast"),
+        tr(
+            locale,
+            f"市场评价: 当前结构 {localize_market_regime(analysis['market_regime'], locale)}，主信号为 {localize_signal_name(analysis['primary_signal'], locale)}，强度 {strength_label(int(analysis['score']), locale)}。",
+            f"Market view: {localize_market_regime(analysis['market_regime'], locale)} structure, primary setup is {localize_signal_name(analysis['primary_signal'], locale)}, strength {strength_label(int(analysis['score']), locale)}.",
+        ),
+        tr(
+            locale,
+            f"市场预测: 未来 24 小时更偏 {bias_text}，信心 {confidence_text}。",
+            f"Forecast: the next 24 hours lean {bias_text} with {confidence_text} confidence.",
+        ),
+        tr(
+            locale,
+            f"关键位: 支撑约 ${fmt_price(levels['support'])}，压力约 ${fmt_price(levels['resistance'])}。",
+            f"Key levels: support near ${fmt_price(levels['support'])}, resistance near ${fmt_price(levels['resistance'])}.",
+        ),
+        tr(
+            locale,
+            f"当前结论: {build_entry_distance_summary(analysis, locale)}",
+            f"Current stance: {build_entry_distance_summary(analysis, locale)}",
+        ),
+        action_text,
+        tr(
+            locale,
+            f"风险点: {localize_reasons(analysis['reasons'][:1], locale)[0] if analysis['reasons'] else tr(locale, '继续等待更清晰结构。', 'wait for a cleaner structure.')}",
+            f"Main risk: {localize_reasons(analysis['reasons'][:1], locale)[0] if analysis['reasons'] else 'wait for a cleaner structure.'}",
+        ),
+        tr(locale, "仅供参考，不构成投资建议。", "For reference only. Not financial advice."),
+    ]
+    if position_is_open(state):
+        lines.insert(
+            4,
+            tr(
+                locale,
+                f"持仓参考: 你的记录开仓价为 ${fmt_price(position_entry_reference(state, analysis['entry_reference']))}。",
+                f"Position reference: your recorded entry is ${fmt_price(position_entry_reference(state, analysis['entry_reference']))}.",
+            ),
+        )
+    return "\n".join(lines)
+
+
+def extract_openclaw_agent_text(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    payloads = result.get("payloads", [])
+    texts: list[str] = []
+    for item in payloads:
+        text = str(item.get("text") or "").strip()
+        if text:
+            texts.append(text)
+    return "\n".join(texts).strip()
+
+
+def call_openclaw_llm_summary(prompt: str, config: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    summary_cfg = config.get("notification", {}).get("daily_summary", {})
+    command = [
+        resolve_openclaw_bin(),
+        "agent",
+        "--agent",
+        str(summary_cfg.get("openclaw_agent_id", "main")),
+        "--message",
+        prompt,
+        "--json",
+        "--thinking",
+        str(summary_cfg.get("thinking", "minimal")),
+        "--timeout",
+        str(int(summary_cfg.get("llm_timeout_seconds", 120))),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=int(summary_cfg.get("llm_timeout_seconds", 120)) + 30,
+        env=build_subprocess_env(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "openclaw agent call failed")
+    payload = json.loads(result.stdout)
+    text = extract_openclaw_agent_text(payload)
+    usage = payload.get("result", {}).get("meta", {}).get("agentMeta", {}).get("lastCallUsage", {}) or payload.get("result", {}).get("meta", {}).get("agentMeta", {}).get("usage", {}) or {}
+    if not text:
+        raise RuntimeError("llm returned empty summary")
+    return text, usage
+
+
+def should_send_daily_summary(config: dict[str, Any], state: dict[str, Any]) -> tuple[bool, str]:
+    notification = config.get("notification", {})
+    daily_cfg = notification.get("daily_summary", {})
+    if not notification.get("enabled", False):
+        return False, "notification disabled"
+    if not daily_cfg.get("enabled", False):
+        return False, "daily summary disabled"
+    if not notification.get("target"):
+        return False, "missing target"
+    send_times = daily_cfg.get("send_times", [])
+    if not isinstance(send_times, list) or not send_times:
+        return False, "no send times"
+    now_minute = local_minute_of_day()
+    sent_keys = {str(item) for item in state.get("daily_summary", {}).get("sent_keys", [])}
+    today = local_today()
+    for send_time in send_times:
+        try:
+            minute_value = parse_hhmm(str(send_time))
+        except Exception:
+            continue
+        send_key = f"{today}:{send_time}"
+        if now_minute >= minute_value and send_key not in sent_keys:
+            return True, send_key
+    return False, "not due"
+
+
+def send_daily_summary(analysis: dict[str, Any], state: dict[str, Any], config: dict[str, Any], dry_run: bool) -> tuple[bool, str]:
+    locale = get_reply_language(config)
+    should_send, reason = should_send_daily_summary(config, state)
+    if not should_send:
+        return False, reason
+    send_key = reason
+    summary_cfg = config.get("notification", {}).get("daily_summary", {})
+    payload = build_daily_summary_payload(analysis, state, locale)
+    llm_text: str | None = None
+    usage: dict[str, Any] = {}
+    llm_reason = "local fallback"
+    if summary_cfg.get("llm_enabled", True):
+        try:
+            llm_text, usage = call_openclaw_llm_summary(build_daily_summary_prompt(payload, locale), config)
+            llm_reason = "llm summary"
+        except Exception as exc:
+            llm_reason = f"llm failed: {exc}"
+    message = llm_text or build_local_daily_summary(analysis, state, locale)
+    media_path: Path | None = None
+    if should_attach_chart(config) and summary_cfg.get("attach_chart", True):
+        chart_cfg = config["notification"]["chart"]
+        bars = max(int(chart_cfg.get("bars", 48)), 12)
+        chart_path = resolve_project_path(chart_cfg.get("path", "state/latest-chart.svg"))
+        chart_candles = enrich_candles(
+            fetch_klines(config["symbol"], "15m", bars + 1, int(config["runtime"]["http_timeout_seconds"]))
+        )[:-1]
+        media_path = build_chart_svg(
+            chart_candles,
+            analysis["price"],
+            chart_path,
+            tr(locale, "ETHUSDT 每日市场评价", "ETHUSDT Daily Market Review"),
+            locale,
+        )
+    result = send_imessage(config, message, dry_run=dry_run, media_path=media_path)
+    if result.returncode != 0:
+        print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr, flush=True)
+        return False, "daily summary send failed"
+    daily_state = state.setdefault("daily_summary", {})
+    sent_keys = [str(item) for item in daily_state.get("sent_keys", []) if str(item)]
+    sent_keys.append(send_key)
+    daily_state["sent_keys"] = sent_keys[-30:]
+    daily_state["last_llm_usage"] = {
+        "date": local_today(),
+        "used_llm": bool(llm_text),
+        "usage": usage,
+        "reason": llm_reason,
+    }
+    return True, llm_reason
+
+
 def signal_rank(label: str) -> int:
     return {"watch": 0, "near_buy": 1, "buy_trigger": 2}.get(label, 0)
 
@@ -1440,7 +1754,7 @@ def send_imessage(
         command.extend(["--media", str(media_path)])
     if dry_run:
         command.append("--dry-run")
-    return subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
+    return subprocess.run(command, capture_output=True, text=True, check=False, timeout=60, env=build_subprocess_env())
 
 
 def maybe_send_followup(
@@ -1620,6 +1934,9 @@ def run_once(config_path: Path, state_path: Path, send: bool, dry_run: bool) -> 
                 print(f"followup sent: {followup_reason}", flush=True)
             else:
                 print(f"no alert sent: {reason}; followup: {followup_reason}", flush=True)
+        daily_sent, daily_reason = send_daily_summary(analysis, state, config, dry_run=dry_run)
+        if daily_sent:
+            print(f"daily summary sent: {daily_reason}", flush=True)
     else:
         print_text_snapshot(analysis, locale)
 

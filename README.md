@@ -102,6 +102,10 @@ Alert messages can include:
 - position size hint
 - strength score
 
+The daemon can also send a scheduled daily market review, even when no buy setup
+is triggered. By default, the repository example is configured to send one daily
+summary at `09:00`.
+
 ### 3. Ask It Questions In iMessage
 
 The project includes an OpenClaw hook that lets you message the watcher and get
@@ -248,6 +252,7 @@ Important fields in `config.json`:
 - `notification.active_windows`: time windows where alerts are allowed
 - `notification.quiet_hours`: time range where alerts stay quiet
 - `notification.followup_tracking`: post-alert tracking behavior
+- `notification.daily_summary`: scheduled daily market review and forecast
 
 The example `config.json` is sanitized for open-source use:
 
@@ -266,6 +271,27 @@ Before using alerts or chat replies, set your own target:
   }
 }
 ```
+
+Example daily summary configuration:
+
+```json
+{
+  "notification": {
+    "daily_summary": {
+      "enabled": true,
+      "send_times": ["09:00"],
+      "llm_enabled": true
+    }
+  }
+}
+```
+
+How it works:
+
+- the watcher checks the configured times every polling cycle
+- once the scheduled time has passed, it sends one summary for that day
+- the LLM writes the market review and short-term forecast
+- if the LLM call fails, the watcher falls back to a local rule-based summary
 
 ## Strategy Profiles
 
