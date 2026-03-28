@@ -280,7 +280,11 @@ Example daily summary configuration:
     "daily_summary": {
       "enabled": true,
       "send_times": ["09:00"],
-      "llm_enabled": true
+      "attach_chart": true,
+      "llm_enabled": true,
+      "llm_timeout_seconds": 120,
+      "openclaw_agent_id": "eth-daily-summary",
+      "thinking": "off"
     }
   }
 }
@@ -292,6 +296,44 @@ How it works:
 - once the scheduled time has passed, it sends one summary for that day
 - the LLM writes the market review and short-term forecast
 - if the LLM call fails, the watcher falls back to a local rule-based summary
+
+Recommended for lower token usage:
+
+- use a dedicated OpenClaw agent for daily summaries instead of your main coding agent
+- the repository example already uses `openclaw_agent_id: "eth-daily-summary"`
+- if you do not want a separate agent, change it back to `main`
+
+Example `~/.openclaw/openclaw.json` agent snippet:
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "workspace": "/path/to/your/main/workspace"
+      },
+      {
+        "id": "eth-daily-summary",
+        "name": "ETH Daily Summary",
+        "workspace": "/path/to/a/small/separate/workspace",
+        "model": {
+          "primary": "yinli/claude-sonnet-4-6",
+          "fallbacks": []
+        },
+        "thinkingDefault": "off"
+      }
+    ]
+  }
+}
+```
+
+Why this matters:
+
+- using `main` may inject a large coding workspace context into each daily summary call
+- a dedicated lightweight agent can reduce token usage significantly
+- after editing `~/.openclaw/openclaw.json`, run `openclaw gateway restart`
 
 ## Strategy Profiles
 

@@ -270,7 +270,11 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
     "daily_summary": {
       "enabled": true,
       "send_times": ["09:00"],
-      "llm_enabled": true
+      "attach_chart": true,
+      "llm_enabled": true,
+      "llm_timeout_seconds": 120,
+      "openclaw_agent_id": "eth-daily-summary",
+      "thinking": "off"
     }
   }
 }
@@ -282,6 +286,44 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
 - 只要当天设定时间已过且当天还没发过，就会补发一条
 - LLM 负责生成市场评价和短线预测
 - 如果 LLM 调用失败，会自动降级成本地规则总结
+
+如果你想明显降低 token 消耗，推荐这样配置：
+
+- 给每日市场评价单独使用一个 `OpenClaw agent`，不要直接复用主 coding agent
+- 仓库默认示例已经使用 `openclaw_agent_id: "eth-daily-summary"`
+- 如果你不想单独建 agent，也可以把它改回 `main`
+
+`~/.openclaw/openclaw.json` 的 agent 配置示例：
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "workspace": "/path/to/your/main/workspace"
+      },
+      {
+        "id": "eth-daily-summary",
+        "name": "ETH Daily Summary",
+        "workspace": "/path/to/a/small/separate/workspace",
+        "model": {
+          "primary": "yinli/claude-sonnet-4-6",
+          "fallbacks": []
+        },
+        "thinkingDefault": "off"
+      }
+    ]
+  }
+}
+```
+
+这样做的原因：
+
+- 如果直接走 `main`，每日摘要请求可能会带上较大的主工作区上下文
+- 单独的轻量 agent 可以明显降低单次日报的 token 消耗
+- 改完 `~/.openclaw/openclaw.json` 后，记得执行 `openclaw gateway restart`
 
 ## 策略档位
 
