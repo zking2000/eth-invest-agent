@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +20,8 @@ type HookEvent = {
 const handlerDir = dirname(fileURLToPath(import.meta.url));
 const projectDir = resolve(handlerDir, "..", "..");
 const scriptPath = resolve(projectDir, "scripts", "eth_watcher.py");
-const configPath = resolve(projectDir, "config.json");
+const localConfigPath = resolve(projectDir, "config.local.json");
+const configPath = existsSync(localConfigPath) ? localConfigPath : resolve(projectDir, "config.json");
 const statePath = resolve(projectDir, "state", "runtime.json");
 
 const normalize = (value: unknown): string => String(value ?? "").trim().toLowerCase();

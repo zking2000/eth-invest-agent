@@ -1,108 +1,243 @@
 # ETH Watcher
 
-`ETH Watcher` 是一个基于 `OpenClaw` 的本地 ETH 监控脚本。
+`ETH Watcher` 现在已经从单一监控脚本升级成一个模块化的 ETH 分析框架。
+它保留了原有的提醒和聊天链路，同时加入了历史数据下载、特征工程、
+XGBoost 训练、ML 辅助实时评分、Backtrader 回测和图表输出能力。
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-更新项目文档时，请同步维护 `README.md` 和 `README.zh-CN.md` 两个文件。
+更新项目文档时，请同步维护 `README.md` 和 `README.zh-CN.md`。
 
-这个项目的目标是：
+## 功能概览
 
-- 以较低的持续成本监控 `ETHUSDT`
-- 在本地用规则打分判断买点
-- 通过 `iMessage` 发送提醒
-- 支持简单的入站聊天问答
-- 支持更灵敏或更保守的交易风格切换
+- 基于 `5m`、`15m`、`1h`、`4h` 的规则型 ETH 交易形态识别
+- 用 `Pandas`、`NumPy` 计算技术指标和特征
+- 用 `CCXT` 下载历史行情
+- 构建可训练的监督学习特征集
+- 用 `XGBoost` 训练信号模型并保存模型产物
+- 用 `Backtrader` 跑回测
+- 输出 SVG 和 Matplotlib 图表
+- 继续支持 `OpenClaw` 的 iMessage 提醒、问答、每日日报和 cron 模式
 
-## 它能做什么
+## 安装
 
-脚本会拉取 Binance 公共市场数据，计算技术指标，并评估三类交易形态：
+```bash
+cd /path/to/eth-invest-agent
+python3 -m pip install -r requirements.txt
+```
 
-- `pullback`：趋势回踩到均线支撑附近
-- `breakout`：放量突破近期 `15m` 高点
-- `reversal`：超跌后的快速反弹修复
+为了适合公开仓库使用，建议把 `config.sample.json` 作为公开模板，把你真实的
+个人配置放进 `config.local.json`（已被 git 忽略）。当 `config.local.json`
+存在时，watcher 会自动优先使用它。
 
-使用的周期：
+如果你希望真正接收提醒或聊天回复，建议先从样例配置复制：
 
-- `5m`
-- `15m`
-- `1h`
-- `4h`
+```bash
+cp config.sample.json config.local.json
+```
 
-使用的指标：
-
-- `EMA20 / EMA50`
-- `RSI14`
-- `ATR14`
-- `MACD histogram`
-
-## 你可以如何与它互动
-
-这个监控器主要有两种互动方式：本地命令行和 `iMessage` 聊天。
-
-### 开始前先配置
-
-仓库里的示例配置是为了适合开源发布而特意做成安全默认值：
-
-- 默认关闭提醒
-- `iMessage` 目标为空
-- 默认使用英文回复
-
-如果你希望收到提醒或聊天回复，需要先在 `config.json` 中填入自己的目标：
+然后再修改 `config.local.json`：
 
 ```json
 {
+  "display": {
+    "price_currency": "CNY",
+    "usd_cny_rate": 7.2
+  },
   "notification": {
     "enabled": true,
     "target": "your-imessage-handle",
-    "reply_language": "en"
+    "reply_language": "zh"
   }
 }
 ```
 
-如果 `notification.target` 为空，脚本就没有可以发送提醒或回复的目标。
+仓库中的默认配置已经做过开源脱敏处理，所以默认关闭提醒，且目标为空。
 
-### 1. 在终端本地交互
+`notification.reply_language` 支持：
 
-你可以不经过 `iMessage`，直接在终端中查询当前判断：
+- `zh`：发送中文消息
+- `en`：发送英文消息
+
+`display.price_currency` 当前支持：
+
+- `CNY`：消息中的价格按人民币展示
+- `USD`：消息中的价格按美元展示
+
+当启用 `CNY` 后，提醒、问答、跟踪消息、每日日报和 `snapshot` 输出中的价格都会
+统一按人民币展示。
+
+## 快速开始
 
 ```bash
 python3 ./scripts/eth_watcher.py snapshot
+python3 ./scripts/eth_watcher.py run-once --send --dry-run
 python3 ./scripts/eth_watcher.py chat-query --message "现在能买吗？"
+python3 ./scripts/eth_watcher.py download-history --limit 300 --output data/binance_ethusdt_15m.csv
+python3 ./scripts/eth_watcher.py build-features --input data/binance_ethusdt_15m.csv --output data/features_ethusdt_15m.csv
+python3 ./scripts/eth_watcher.py train-model --features data/features_ethusdt_15m.csv
+python3 ./scripts/eth_watcher.py backtest --input data/binance_ethusdt_15m.csv
+python3 ./scripts/eth_watcher.py sweep-backtest --input data/binance_ethusdt_15m.csv
+```
+
+## ML 工作流
+
+### 1. 下载历史 K 线
+
+```bash
+python3 ./scripts/eth_watcher.py download-history \
+  --exchange binance \
+  --symbol ETH/USDT \
+  --timeframe 15m \
+  --limit 2000 \
+  --output data/binance_ethusdt_15m.csv
+```
+
+### 2. 构建特征集
+
+```bash
+python3 ./scripts/eth_watcher.py build-features \
+  --input data/binance_ethusdt_15m.csv \
+  --output data/features_ethusdt_15m.csv \
+  --horizon 4 \
+  --threshold-pct 0.35
+```
+
+当前特征工程包括：
+
+- 收益率和滚动波动率
+- 成交量变化和 z-score
+- `EMA20`、`EMA50`、`RSI14`、`ATR14`、`MACD histogram`
+- breakout 和 pullback 相关衍生特征
+- 面向 `buy / hold / sell` 映射的未来收益标签
+
+### 3. 训练 XGBoost 模型
+
+```bash
+python3 ./scripts/eth_watcher.py train-model \
+  --features data/features_ethusdt_15m.csv \
+  --model-output models/xgboost_eth_signal.json \
+  --metadata-output models/xgboost_eth_signal.meta.json
+```
+
+训练完成后会写出：
+
+- `models/` 下的模型权重
+- `models/` 下的特征元数据
+- 终端里的最新样本预测结果
+
+### 4. 运行回测
+
+```bash
+python3 ./scripts/eth_watcher.py backtest \
+  --input data/binance_ethusdt_15m.csv \
+  --model-path models/xgboost_eth_signal.json \
+  --metadata-path models/xgboost_eth_signal.meta.json \
+  --entry-prob-threshold 0.34 \
+  --exit-prob-threshold 0.42 \
+  --min-hold-bars 2
+```
+
+现在这个命令默认还会在 `reports/backtest/` 下生成一个带时间戳的报告目录，
+其中包括：
+
+- `summary.json`
+- `trades.csv`
+- `equity_curve.csv`
+- `price_signals.png`
+- `equity_curve.png`
+- `monthly_returns.png`
+
+同时还会维护 `reports/latest/backtest` 软链接，始终指向最近一次回测报告，
+方便你每天直接打开最新结果。
+
+当前回测层使用 `Backtrader`，并实现了一个简化的风险控制框架：
+
+- 按风险比例决定仓位大小
+- ATR 止损
+- reward/risk 止盈
+- 触发止损、止盈、看空信号翻转或看空概率翻转时退出
+- 支持用概率阈值调节交易频率的松紧度
+
+当前回测输出已经包括：
+
+- 总收益率
+- 胜率
+- 最大回撤
+- 年化波动率
+- 年化 Sharpe
+- 按月收益
+- 退出原因分布
+- 最优和最差交易
+- 完整交易明细
+
+### 4a. 参数扫描
+
+```bash
+python3 ./scripts/eth_watcher.py sweep-backtest \
+  --input data/binance_ethusdt_15m.csv \
+  --entry-prob-thresholds 0.28,0.30,0.34 \
+  --exit-prob-thresholds 0.34,0.36,0.42 \
+  --stop-loss-atrs 1.0,1.3,1.6 \
+  --top 10
+```
+
+它会在 `reports/sweeps/` 下生成一个带时间戳的目录，里面包含：
+
+- `summary.json`
+- `grid.csv`
+- 每个 `stop_loss_atr` 对应一张收益热力图
+
+同时还会维护 `reports/latest/sweeps` 软链接，始终指向最近一次参数扫描结果。
+
+现在 `sweep-backtest` 默认还会自动挑选收益排名最高的一组参数，并回写到
+`config.json` 里的：
+
+- `ml.backtest_defaults`
+- `ml.recommended_backtest`
+
+这样你后续直接运行 `backtest` 时，即使不再手动传阈值，也会优先复用最新推荐
+默认参数。如果你只想看扫描结果、不改配置，可加 `--no-apply-best-to-config`。
+
+### 5. 把模型接入实时 watcher
+
+当默认模型文件已经存在于 `models/` 后，`snapshot`、`run-once` 和
+`daemon` 会自动尝试把模型结果融合进实时分析流程。
+
+当前融合方式：
+
+- 规则信号仍然是主引擎
+- 模型输出作为辅助分和概率提示
+- 强看多模型确认可以把 `near_buy` 升级
+- 明显看空分歧可以把过激信号降级
+- 提醒、问答和每日日报现在都会给出更直接的操作倾向：买入、轻仓试仓、观望、
+  减仓、持有或卖出
+- 面向用户的价格显示现在支持在 `人民币` 和 `美元` 之间切换
+- 消息语言现在支持在 `中文` 和 `英文` 之间切换
+
+## 提醒与问答
+
+### 本地命令行交互
+
+```bash
+python3 ./scripts/eth_watcher.py snapshot
 python3 ./scripts/eth_watcher.py chat-query --message "距离买点多远？"
 python3 ./scripts/eth_watcher.py position-status
 ```
 
-这些命令的作用分别是：
-
-- `snapshot`：打印当前市场判断和各信号评分
-- `chat-query --message "..."`
-：调用和聊天回复相同的问答逻辑
-- `position-status`：查看当前记录的持仓状态
-
-### 2. 被动接收提醒
-
-你也可以让脚本一直运行，在规则命中时主动推送提醒：
+### daemon 模式
 
 ```bash
 python3 ./scripts/eth_watcher.py daemon
 ```
 
-提醒消息通常会包含：
+当前 watcher 仍然可以发送：
 
-- 形态类型
-- 入场区间
-- 止损位
-- 止盈位
-- 盈亏比
-- 仓位建议
-- 强度评分
+- 交易提醒
+- 提醒后的跟踪消息
+- 每日固定时段市场摘要
 
-即使当天没有触发买点，daemon 也可以按固定时间发送一条“每日市场评价与预测”。仓库里的默认示例配置是每天 `09:00` 发送一条。
-
-### 3. 通过 iMessage 主动提问
-
-项目里包含一个 OpenClaw hook，你可以直接给它发消息，让它回复，而不是只等它推送提醒。
+### iMessage 主动提问
 
 先启用 hook：
 
@@ -111,12 +246,11 @@ openclaw hooks enable eth-chat
 openclaw gateway restart
 ```
 
-然后向 `config.json` 中配置的同一个 `iMessage` 目标发送消息。
-
-例如：
+然后可以问：
 
 - `ETH`
 - `现在能买吗？`
+- `现在要不要卖？`
 - `距离买点多远？`
 - `可以先小仓试一下吗？`
 - `当前表现如何？`
@@ -124,151 +258,27 @@ openclaw gateway restart
 - `为什么这么判断？`
 - `HELP`
 
-英文提问也同样支持。
+英文提问同样支持。
 
-它通常可以回答这些类型的问题：
-
-- 当前是 `watch`、`near buy` 还是 `buy trigger`
-- 当前价格距离建议入场位还有多远
-- 现在是否适合先少量买入
-- 当前相对参考位或持仓价的表现
-- 当前记录的持仓状态
-- 当前判断背后的主要理由
-
-### 3a. 如何确认 Hook 已成功注册
-
-先检查 OpenClaw 是否已经识别到这个 hook：
+### 如何确认 hook 生效
 
 ```bash
 openclaw hooks list --verbose
-```
-
-你应该能看到类似：
-
-```text
-eth-chat   ✓ ready
-```
-
-再检查 gateway 是否已经在运行时注册它：
-
-```bash
 rg "Registered hook: eth-chat|eth-chat" ~/.openclaw/logs/gateway.log
 ```
 
-你应该能看到类似：
+## 每日日报与 Cron
 
-```text
-Registered hook: eth-chat -> message:preprocessed
-```
-
-如果还没有出现，可以先重启 gateway，再重新检查：
-
-```bash
-openclaw gateway restart
-openclaw hooks list --verbose
-```
-
-### 4. 记录真实持仓以获得更准确的跟踪
-
-如果你希望脚本后续提到的是你的真实成交价，而不是它自己的参考入场价：
-
-```bash
-python3 ./scripts/eth_watcher.py position-open --entry-price 1988.5 --size "10%"
-python3 ./scripts/eth_watcher.py position-status
-python3 ./scripts/eth_watcher.py position-close
-```
-
-记录持仓后，后续的跟踪消息会更贴近你的真实仓位表现。
-
-## 回复语言
-
-你可以选择提醒消息和聊天回复使用英文还是中文。
-
-在 `config.json` 中设置：
+每日日报配置示例：
 
 ```json
 {
+  "display": {
+    "price_currency": "CNY",
+    "usd_cny_rate": 7.2
+  },
   "notification": {
-    "reply_language": "en"
-  }
-}
-```
-
-支持的值：
-
-- `"en"`：英文回复
-- `"zh"`：中文回复
-
-这个配置会影响：
-
-- 提醒消息
-- 跟踪消息
-- 聊天问答回复
-- 脚本在终端输出的文本快照
-
-## 快速开始
-
-```bash
-cd /path/to/eth-invest-agent
-python3 ./scripts/eth_watcher.py snapshot
-python3 ./scripts/eth_watcher.py run-once --send --dry-run
-python3 ./scripts/eth_watcher.py daemon
-python3 ./scripts/eth_watcher.py send-test --dry-run
-python3 ./scripts/eth_watcher.py chat-query --message "Can I buy now?"
-python3 ./scripts/eth_watcher.py position-open --entry-price 1988.5 --size "10%"
-python3 ./scripts/eth_watcher.py position-status
-python3 ./scripts/eth_watcher.py position-close
-```
-
-如果你不想长期挂一个独立 daemon，也可以改用 `OpenClaw cron` 每分钟执行一次 watcher。
-
-你也可以显式指定项目根目录：
-
-```bash
-export ETH_AGENT_HOME="/path/to/eth-invest-agent"
-python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
-```
-
-## 配置项说明
-
-`config.json` 中比较重要的字段包括：
-
-- `symbol`：交易对，默认 `ETHUSDT`
-- `strategy_profile`：`scalp`、`balanced` 或 `swing`
-- `notification.enabled`：是否启用主动提醒
-- `notification.target`：你的 `iMessage` 目标
-- `notification.reply_language`：`en` 或 `zh`
-- `notification.cooldown_minutes`：提醒之间的最短冷却时间
-- `notification.max_alerts_per_day`：单日提醒上限
-- `notification.min_score_to_alert`：发送提醒所需的最低分数
-- `notification.active_windows`：允许提醒的时间窗口
-- `notification.quiet_hours`：静默时间段
-- `notification.followup_tracking`：提醒后跟踪逻辑
-- `notification.daily_summary`：每日固定时段市场评价与预测
-
-仓库内提供的 `config.json` 是为开源使用准备的：
-
-- 默认关闭提醒
-- 目标句柄为空
-- 默认使用英文回复
-
-真正使用前，请填上你自己的配置：
-
-```json
-{
-  "notification": {
-    "enabled": true,
-    "target": "your-imessage-handle",
-    "reply_language": "en"
-  }
-}
-```
-
-每日市场评价配置示例：
-
-```json
-{
-  "notification": {
+    "reply_language": "zh",
     "daily_summary": {
       "enabled": true,
       "send_times": ["09:00"],
@@ -282,159 +292,69 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
 }
 ```
 
-它的工作方式是：
+当 `notification.enabled=true`、`target` 已配置为你的 iMessage 目标，且
+OpenClaw 的 hook / cron 已启用后，每日日报链路就是：
 
-- daemon 每轮都会检查是否到了设定发送时间
-- 只要当天设定时间已过且当天还没发过，就会补发一条
-- LLM 负责生成市场评价和短线预测
-- 如果 LLM 调用失败，会自动降级成本地规则总结
+1. `run-once --send` 或 cron / daemon 定时拉取最新 ETH 数据。
+2. watcher 生成规则 + ML 融合分析，并附带买卖建议。
+3. `send_daily_summary()` 通过 OpenClaw 发送日报。
+4. OpenClaw 把消息投递到你配置的 iMessage 目标。
 
-如果你想明显降低 token 消耗，推荐这样配置：
+因此日常使用上，你现在可以直接获得：
 
-- 给每日市场评价单独使用一个 `OpenClaw agent`，不要直接复用主 coding agent
-- 仓库默认示例已经使用 `openclaw_agent_id: "eth-daily-summary"`
-- 如果你不想单独建 agent，也可以把它改回 `main`
+- 实时 ETH 价格变化监测
+- 买入 / 轻仓试仓 / 观望 / 减仓 / 卖出建议
+- 通过 iMessage 定时收到市场分析日报和未来 24 小时展望
 
-`~/.openclaw/openclaw.json` 的 agent 配置示例：
+如果想降低 token 成本，建议：
 
-```json
-{
-  "agents": {
-    "list": [
-      {
-        "id": "main",
-        "default": true,
-        "workspace": "/path/to/your/main/workspace"
-      },
-      {
-        "id": "eth-daily-summary",
-        "name": "ETH Daily Summary",
-        "workspace": "/path/to/a/small/separate/workspace",
-        "model": {
-          "primary": "ollama/qwen2.5-coder:7b",
-          "fallbacks": []
-        },
-        "thinkingDefault": "off"
-      }
-    ]
-  }
-}
-```
+- 单独为日报使用 `eth-daily-summary`
+- 保持该 agent 的 workspace 尽量小
+- 尽量使用本地模型
 
-这样做的原因：
+最近的每日日报发送审计保存在 `state/runtime.json`：
 
-- 如果直接走 `main`，每日摘要请求可能会带上较大的主工作区上下文
-- 单独的轻量 agent 可以明显降低单次日报的 token 消耗
-- 把 `eth-daily-summary` 切到本地模型，还可以进一步降低 API 成本
-- 改完 `~/.openclaw/openclaw.json` 后，记得执行 `openclaw gateway restart`
+- `daily_summary.last_audit`
+- `daily_summary.audit_history`
 
-每日摘要审计日志：
+如果你不想长期运行 daemon，也可以改成 `OpenClaw cron` 每分钟执行一次
+`run-once --send`。
 
-- watcher 会把最近一次每日日报发送审计写入 `state/runtime.json`
-- 查看 `daily_summary.last_audit` 可以看到最近一次发送尝试
-- 查看 `daily_summary.audit_history` 可以看到最近若干次发送记录
-- 每条审计会记录发送时间、目标、语言、成功或失败状态、LLM 使用情况，以及可用时的消息 id
+## 重要配置项
 
-## 策略档位
-
-- `scalp`：更快、更灵敏，但噪音更多
-- `balanced`：默认档，速度和过滤能力更均衡
-- `swing`：更慢、更保守
-
-示例：
-
-```json
-{
-  "strategy_profile": "swing"
-}
-```
-
-## 持仓跟踪
-
-如果你希望跟踪消息使用你的真实成交价，而不是脚本自己的参考入场价：
-
-1. 开仓后执行 `position-open`
-2. 平仓后执行 `position-close`
-
-这样浮盈亏、距离止损、距离止盈等数据会更贴近你的真实交易。
-
-## 运行副本
-
-如果你希望把编辑代码的目录和长期后台运行的目录分开，可以部署一个运行副本：
-
-```bash
-cd /path/to/eth-invest-agent
-./deploy_runtime_copy.sh
-ETH_AGENT_HOME="$HOME/.clawdbot/apps/eth-invest-agent" "$HOME/.clawdbot/apps/eth-invest-agent/install_launch_agent.sh"
-```
-
-适合这些场景：
-
-- 一个目录专门用于编辑源码
-- 另一个稳定目录专门用于后台运行
-
-## OpenClaw Cron 模式
-
-你也可以不用长期运行 daemon，而改成用 `OpenClaw cron` 每分钟执行一次 watcher。
-
-推荐方式：
-
-- `eth-chat` 聊天问答继续保留
-- 关闭原来的 `launchd daemon`
-- 新建一个每分钟执行 `run-once --send` 的 cron job
-- 给 cron 单独使用一个轻量 agent
-
-`~/.openclaw/openclaw.json` 中的 cron agent 示例：
-
-```json
-{
-  "agents": {
-    "list": [
-      {
-        "id": "eth-watcher-cron",
-        "name": "ETH Watcher Cron",
-        "workspace": "/path/to/a/separate/cron-workspace",
-        "model": {
-          "primary": "ollama/qwen2.5-coder:7b",
-          "fallbacks": []
-        },
-        "thinkingDefault": "off"
-      }
-    ]
-  }
-}
-```
-
-cron job 示例：
-
-```bash
-openclaw cron add \
-  --name "eth-watcher-minute" \
-  --every 1m \
-  --session isolated \
-  --agent eth-watcher-cron \
-  --light-context \
-  --no-deliver \
-  --message "Use the exec tool exactly once. Run this command on the gateway host and do nothing else: /bin/zsh -lc 'export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; /usr/bin/python3 \"/Users/you/.clawdbot/apps/eth-invest-agent/scripts/eth_watcher.py\" --config \"/Users/you/.clawdbot/apps/eth-invest-agent/config.json\" --state \"/Users/you/.clawdbot/apps/eth-invest-agent/state/runtime.json\" run-once --send'. After the command finishes, emit one short plain-text status line with the exit code and the key stdout or stderr result."
-```
-
-常用命令：
-
-- `openclaw cron list`
-- `openclaw cron runs --id <job-id>`
-- `openclaw cron run <job-id>`
-
-如果切到 cron 模式，不要让旧 daemon 同时继续运行，否则 watcher 可能会被重复执行。
+- `symbol`：默认 `ETHUSDT`
+- `strategy_profile`：`scalp`、`balanced`、`swing`
+- `display.price_currency`：面向用户显示价格时使用 `CNY` 或 `USD`
+- `display.usd_cny_rate`：显示人民币时使用的美元兑人民币汇率
+- `notification.*`：提醒、跟踪、问答、每日日报相关行为
+- `notification.reply_language`：所有外发消息使用 `zh` 或 `en`
+- `ml.enabled`：是否启用模型辅助实时评分
+- `ml.model_path`：默认模型路径
+- `ml.metadata_path`：特征元数据路径
+- `ml.feature_limit`：实时构建特征时读取的最近 bar 数
+- `ml.target_horizon`：标签预测周期
+- `ml.target_threshold_pct`：标签阈值百分比
 
 ## 仓库结构
 
-- `scripts/eth_watcher.py`：行情获取、指标计算、信号评分、提醒发送
-- `config.json`：本地配置
+- `scripts/eth_watcher.py`：统一编排入口和 CLI
+- `eth_agent/config.py`：配置默认值和加载逻辑
+- `eth_agent/state.py`：运行时状态默认值和归一化
+- `eth_agent/data/`：Binance 获取逻辑和 `CCXT` 下载器
+- `eth_agent/features/`：指标和特征工程
+- `eth_agent/models/`：XGBoost 训练和推理
+- `eth_agent/strategy/`：规则信号引擎
+- `eth_agent/risk/`：跟踪和风险控制辅助逻辑
+- `eth_agent/backtest/`：Backtrader 集成
+- `eth_agent/visualization/`：SVG 和 Matplotlib 图表
+- `hooks/eth-chat/`：OpenClaw 聊天 hook
+- `config.sample.json`：适合公开仓库的示例配置
+- `config.local.json`：私有本地覆写配置（已忽略）
+- `config.json`：回退用本地配置
 - `state/runtime.json`：运行时状态
-- `hooks/eth-chat/`：OpenClaw 的入站聊天回复 hook
-- `deploy_runtime_copy.sh`：复制项目到稳定运行目录
 
 ## 注意事项
 
-- 脚本包含冷却时间、单日提醒上限和重复过滤逻辑，因此不会每分钟都刷屏。
-- 这是一个基于规则的辅助工具，不代表收益保证。
+- 实时 watcher 目前仍以规则引擎为主，ML 层只是辅助确认。
+- 这个仓库适合做分析、实验和策略验证，不是自动盈利保证。
+- 所有内容仅供参考，不构成投资建议。

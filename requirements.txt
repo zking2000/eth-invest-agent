@@ -1,0 +1,6 @@
+pandas
+numpy
+ccxt
+xgboost
+backtrader
+matplotlib
