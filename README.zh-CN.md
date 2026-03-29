@@ -80,6 +80,33 @@ python3 ./scripts/eth_watcher.py backtest --input data/binance_ethusdt_15m.csv
 python3 ./scripts/eth_watcher.py sweep-backtest --input data/binance_ethusdt_15m.csv
 ```
 
+## 安全推送与当前运行目录
+
+当前仓库目录已经是默认的真实运行目录。`OpenClaw cron`、聊天 hook、
+`config.local.json` 和 `state/runtime.json` 都直接使用这个仓库，不再依赖
+`~/.clawdbot/apps/eth-invest-agent` 下的单独运行副本。
+
+如果你希望“当前运行代码”和“推送到 GitHub 的代码”长期保持一致，建议不要直接手动
+执行 `git push`，而是使用内置的安全发布流程：
+
+```bash
+chmod +x ./scripts/push_and_sync.sh
+./scripts/push_and_sync.sh
+```
+
+这套流程现在会按顺序执行两件事：
+
+1. 只扫描 **Git 跟踪文件**，检查是否包含个人信息或敏感信息。
+2. 将当前 `HEAD` 推送到 `origin`。
+
+如果你只想单独执行一次“推送前隐私审计”：
+
+```bash
+python3 ./scripts/audit_tracked_files.py
+```
+
+由于当前仓库本身就是运行目录，所以推送成功后不需要再做额外同步。
+
 ## ML 工作流
 
 ### 1. 下载历史 K 线
@@ -201,8 +228,8 @@ python3 ./scripts/eth_watcher.py sweep-backtest \
 
 ### 5. 把模型接入实时 watcher
 
-当默认模型文件已经存在于 `models/` 后，`snapshot`、`run-once` 和
-`daemon` 会自动尝试把模型结果融合进实时分析流程。
+当默认模型文件已经存在于 `models/` 后，`snapshot`、`run-once` 和可选的
+`daemon` 模式会自动尝试把模型结果融合进实时分析流程。
 
 当前融合方式：
 
@@ -225,7 +252,24 @@ python3 ./scripts/eth_watcher.py chat-query --message "距离买点多远？"
 python3 ./scripts/eth_watcher.py position-status
 ```
 
-### daemon 模式
+### 默认 cron 模式
+
+这已经是推荐的生产运行方式。watcher 通过 `OpenClaw cron` 定时调度，并直接
+运行当前仓库：
+
+```bash
+openclaw cron list
+openclaw cron runs --id 52bfec18-3cac-42b4-95a3-77547800b40b --limit 5
+```
+
+当前默认行为：
+
+- 当前仓库目录就是唯一运行代码源
+- `config.local.json` 是私有运行配置
+- `state/runtime.json` 保存运行状态和每日日报审计
+- `eth-watcher-minute` 通过 OpenClaw 每分钟执行一次 `run-once --send`
+
+### 可选 daemon 模式
 
 ```bash
 python3 ./scripts/eth_watcher.py daemon
@@ -293,9 +337,9 @@ rg "Registered hook: eth-chat|eth-chat" ~/.openclaw/logs/gateway.log
 ```
 
 当 `notification.enabled=true`、`target` 已配置为你的 iMessage 目标，且
-OpenClaw 的 hook / cron 已启用后，每日日报链路就是：
+OpenClaw 的 hook / 默认 cron 已启用后，每日日报链路就是：
 
-1. `run-once --send` 或 cron / daemon 定时拉取最新 ETH 数据。
+1. `run-once --send` 拉取最新 ETH 数据，通常由默认的 OpenClaw cron 定时触发。
 2. watcher 生成规则 + ML 融合分析，并附带买卖建议。
 3. `send_daily_summary()` 通过 OpenClaw 发送日报。
 4. OpenClaw 把消息投递到你配置的 iMessage 目标。
@@ -317,8 +361,7 @@ OpenClaw 的 hook / cron 已启用后，每日日报链路就是：
 - `daily_summary.last_audit`
 - `daily_summary.audit_history`
 
-如果你不想长期运行 daemon，也可以改成 `OpenClaw cron` 每分钟执行一次
-`run-once --send`。
+`OpenClaw cron` 现在就是默认推荐的调度方式。`daemon` 更适合作为本地实验或临时调试时的备用模式。
 
 ## 重要配置项
 
@@ -348,10 +391,12 @@ OpenClaw 的 hook / cron 已启用后，每日日报链路就是：
 - `eth_agent/backtest/`：Backtrader 集成
 - `eth_agent/visualization/`：SVG 和 Matplotlib 图表
 - `hooks/eth-chat/`：OpenClaw 聊天 hook
+- `scripts/push_and_sync.sh`：Git 跟踪文件隐私审计 + `git push`
 - `config.sample.json`：适合公开仓库的示例配置
 - `config.local.json`：私有本地覆写配置（已忽略）
 - `config.json`：回退用本地配置
 - `state/runtime.json`：运行时状态
+- `deploy_runtime_copy.sh`：历史兼容脚本，现已不再用于实际运行
 
 ## 注意事项
 

@@ -84,6 +84,35 @@ python3 ./scripts/eth_watcher.py backtest --input data/binance_ethusdt_15m.csv
 python3 ./scripts/eth_watcher.py sweep-backtest --input data/binance_ethusdt_15m.csv
 ```
 
+## Safe Push And Live Runtime
+
+The current repository directory is now the default live runtime source.
+`OpenClaw cron`, the chat hook, `config.local.json`, and `state/runtime.json`
+all run directly from this repo instead of a separate runtime copy under
+`~/.clawdbot/apps/eth-invest-agent`.
+
+For day-to-day publishing, use the built-in safe flow instead of running
+`git push` manually:
+
+```bash
+chmod +x ./scripts/push_and_sync.sh
+./scripts/push_and_sync.sh
+```
+
+This flow now does two things in order:
+
+1. Audits **tracked files only** for likely private data or secrets.
+2. Pushes `HEAD` to `origin`.
+
+To run only the tracked-file privacy audit:
+
+```bash
+python3 ./scripts/audit_tracked_files.py
+```
+
+Because this repository itself is the live runtime source, no extra sync step is
+needed after a successful push.
+
 ## ML Workflow
 
 ### 1. Download historical candles
@@ -208,7 +237,7 @@ only want to inspect sweep results without updating config.
 ### 5. Use the model in live watcher flow
 
 Once the default model files exist in `models/`, `snapshot`, `run-once`, and
-`daemon` automatically try to enrich the rule-based analysis with model
+optional `daemon` mode automatically try to enrich the rule-based analysis with model
 probabilities.
 
 Current live fusion behavior:
@@ -232,7 +261,24 @@ python3 ./scripts/eth_watcher.py chat-query --message "How far is price from the
 python3 ./scripts/eth_watcher.py position-status
 ```
 
-### Daemon mode
+### Default cron mode
+
+This is now the recommended production mode. The watcher is scheduled through
+`OpenClaw cron` and runs the current repository directly:
+
+```bash
+openclaw cron list
+openclaw cron runs --id 52bfec18-3cac-42b4-95a3-77547800b40b --limit 5
+```
+
+Current default behavior:
+
+- the repo directory is the only live code source
+- `config.local.json` is the private runtime config
+- `state/runtime.json` stores runtime state and daily summary audits
+- `eth-watcher-minute` runs `run-once --send` every minute through OpenClaw
+
+### Optional daemon mode
 
 ```bash
 python3 ./scripts/eth_watcher.py daemon
@@ -300,9 +346,9 @@ Example daily summary config:
 ```
 
 With `notification.enabled=true`, a valid iMessage `target`, and the OpenClaw
-hook/cron setup enabled, the daily summary flow is:
+hook/default cron setup enabled, the daily summary flow is:
 
-1. `run-once --send` or cron/daemon fetches fresh ETH data.
+1. `run-once --send` fetches fresh ETH data, usually from the default OpenClaw cron job.
 2. The watcher generates rule + ML analysis with a buy/sell/wait recommendation.
 3. `send_daily_summary()` sends the brief through OpenClaw.
 4. OpenClaw delivers it to your configured iMessage target.
@@ -324,8 +370,8 @@ The watcher stores recent summary delivery audits in `state/runtime.json` under:
 - `daily_summary.last_audit`
 - `daily_summary.audit_history`
 
-If you do not want a long-running daemon, you can switch to `OpenClaw cron`
-and run `run-once --send` every minute instead.
+`OpenClaw cron` is now the default recommended scheduler. Keep `daemon` only as
+an optional manual fallback for local experiments.
 
 ## Important Config Fields
 
@@ -355,10 +401,12 @@ and run `run-once --send` every minute instead.
 - `eth_agent/backtest/`: Backtrader integration
 - `eth_agent/visualization/`: SVG and Matplotlib charts
 - `hooks/eth-chat/`: OpenClaw chat hook
+- `scripts/push_and_sync.sh`: tracked-file privacy audit + `git push`
 - `config.sample.json`: public-safe example config
 - `config.local.json`: private local override config (gitignored)
 - `config.json`: fallback local config
 - `state/runtime.json`: runtime state
+- `deploy_runtime_copy.sh`: legacy compatibility stub, no longer used for live runtime
 
 ## Notes
 
