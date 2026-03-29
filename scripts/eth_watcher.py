@@ -26,7 +26,10 @@ from eth_agent.config import load_config as module_load_config
 from eth_agent.config import resolve_project_path as module_resolve_project_path
 from eth_agent.data.binance import fetch_klines as module_fetch_klines
 from eth_agent.data.binance import fetch_price as module_fetch_price
+from eth_agent.features.indicators import clamp as module_clamp
 from eth_agent.features.indicators import enrich_candles as module_enrich_candles
+from eth_agent.features.indicators import fmt_price as module_fmt_price
+from eth_agent.features.indicators import percent_change as module_percent_change
 from eth_agent.features.pipeline import FeatureConfig, build_feature_frame, load_feature_frame, save_feature_frame
 from eth_agent.i18n import get_reply_language as module_get_reply_language
 from eth_agent.i18n import localize_market_regime as module_localize_market_regime
@@ -514,7 +517,7 @@ def enrich_candles(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def fmt_price(value: float) -> str:
-    return f"{value:,.2f}"
+    return module_fmt_price(value)
 
 
 def build_display_settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -589,7 +592,7 @@ def format_display_delta(value: float, analysis: dict[str, Any]) -> str:
 
 
 def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+    return module_clamp(value, low, high)
 
 
 def parse_hhmm(value: str) -> int:
@@ -597,9 +600,7 @@ def parse_hhmm(value: str) -> int:
 
 
 def percent_change(a: float, b: float) -> float:
-    if a == 0:
-        return 0.0
-    return ((b - a) / a) * 100.0
+    return module_percent_change(a, b)
 
 
 def analyze_market(config: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
