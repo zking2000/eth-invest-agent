@@ -12,8 +12,6 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from copy import deepcopy
-from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -26,9 +24,9 @@ import pandas as pd
 
 from eth_agent.config import load_config as module_load_config
 from eth_agent.config import resolve_project_path as module_resolve_project_path
-from eth_agent.data.binance import fetch_json as module_fetch_json
 from eth_agent.data.binance import fetch_klines as module_fetch_klines
 from eth_agent.data.binance import fetch_price as module_fetch_price
+from eth_agent.features.indicators import enrich_candles as module_enrich_candles
 from eth_agent.features.pipeline import FeatureConfig, build_feature_frame, load_feature_frame, save_feature_frame
 from eth_agent.i18n import get_reply_language as module_get_reply_language
 from eth_agent.i18n import localize_market_regime as module_localize_market_regime
@@ -42,18 +40,16 @@ from eth_agent.risk.management import compact_alert_history as module_compact_al
 from eth_agent.risk.management import position_entry_reference as module_position_entry_reference
 from eth_agent.risk.management import position_is_open as module_position_is_open
 from eth_agent.risk.management import should_send_alert as module_should_send_alert
-from eth_agent.risk.management import signal_rank as module_signal_rank
 from eth_agent.risk.management import start_tracking as module_start_tracking
 from eth_agent.state import ensure_state_defaults as module_ensure_state_defaults
 from eth_agent.state import load_state as module_load_state
 from eth_agent.strategy.rule_engine import analyze_market as module_analyze_market
+from eth_agent.utils.time import local_hour as module_local_hour
+from eth_agent.utils.time import local_minute_of_day as module_local_minute_of_day
+from eth_agent.utils.time import local_today as module_local_today
+from eth_agent.utils.time import parse_hhmm as module_parse_hhmm
+from eth_agent.utils.time import utc_now_iso as module_utc_now_iso
 from eth_agent.visualization.charts import build_chart_svg as module_build_chart_svg
-
-
-BINANCE_BASE_URLS = [
-    "https://api.binance.com",
-    "https://data-api.binance.vision",
-]
 
 
 def resolve_project_dir() -> Path:
@@ -468,202 +464,29 @@ def run_sweep_backtest_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
-def infer_default_target() -> str | None:
-    candidates = [
-        Path.home() / ".clawdbot" / "clawdbot.json",
-        Path.home() / ".openclaw" / "openclaw.json",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text())
-            allow_from = data.get("channels", {}).get("imessage", {}).get("allowFrom", [])
-            if allow_from:
-                return str(allow_from[0])
-        except Exception:
-            continue
-    return None
-
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "symbol": "ETHUSDT",
-    "strategy_profile": "balanced",
-    "runtime": {
-        "poll_interval_seconds": 60,
-        "http_timeout_seconds": 12,
-        "kline_limit": 320,
-    },
-    "notification": {
-        "enabled": True,
-        "channel": "imessage",
-        "target": infer_default_target(),
-        "reply_language": "en",
-        "cooldown_minutes": 30,
-        "min_score_to_alert": 68,
-        "max_alerts_per_day": 6,
-        "min_price_move_percent_for_repeat": 1.2,
-        "quiet_hours": {
-            "enabled": True,
-            "start_hour": 23,
-            "end_hour": 8,
-            "override_for_buy_trigger": True,
-        },
-        "chart": {
-            "enabled": True,
-            "bars": 48,
-            "path": "state/latest-chart.svg",
-        },
-        "active_windows": {
-            "enabled": True,
-            "windows": ["08:00-12:00", "20:00-02:00"],
-            "override_for_buy_trigger": True,
-        },
-        "followup_tracking": {
-            "enabled": True,
-            "duration_minutes": 30,
-            "interval_minutes": 10,
-            "min_move_percent": 0.6,
-            "only_when_position_open": False,
-        },
-        "daily_summary": {
-            "enabled": True,
-            "send_times": ["09:00"],
-            "attach_chart": True,
-            "llm_enabled": True,
-            "llm_timeout_seconds": 120,
-            "openclaw_agent_id": "eth-daily-summary",
-            "thinking": "off",
-        },
-    },
-    "rules": {
-        "near_buy_score": 68,
-        "buy_trigger_score": 84,
-        "pullback_max_atr_distance": 0.75,
-        "pullback_rsi_min": 44,
-        "pullback_rsi_max": 63,
-        "breakout_volume_multiple": 1.4,
-        "reclaim_rsi_min": 48,
-        "reversal_rsi_floor": 38,
-        "reversal_volume_multiple": 1.15,
-        "max_extension_atr": 1.4,
-        "stop_atr_multiplier": 1.3,
-        "breakout_lookback_bars": 20,
-        "ema_slope_lookback": 3,
-        "position_size_hint": "8%-12%",
-        "take_profit_rr_1": 1.5,
-        "take_profit_rr_2": 2.3,
-    },
-    "profiles": {
-        "scalp": {
-            "runtime": {
-                "poll_interval_seconds": 45,
-            },
-            "notification": {
-                "cooldown_minutes": 20,
-                "min_score_to_alert": 64,
-                "max_alerts_per_day": 10,
-                "min_price_move_percent_for_repeat": 0.8,
-            },
-            "rules": {
-                "near_buy_score": 64,
-                "buy_trigger_score": 78,
-                "pullback_max_atr_distance": 0.95,
-                "breakout_volume_multiple": 1.25,
-                "max_extension_atr": 1.65,
-                "stop_atr_multiplier": 1.05,
-                "position_size_hint": "6%-10%",
-            },
-        },
-        "balanced": {
-            "runtime": {
-                "poll_interval_seconds": 60,
-            },
-            "notification": {
-                "cooldown_minutes": 30,
-                "min_score_to_alert": 68,
-                "max_alerts_per_day": 6,
-            },
-            "rules": {
-                "near_buy_score": 68,
-                "buy_trigger_score": 84,
-                "pullback_max_atr_distance": 0.75,
-                "breakout_volume_multiple": 1.4,
-                "stop_atr_multiplier": 1.3,
-                "position_size_hint": "8%-12%",
-            },
-        },
-        "swing": {
-            "runtime": {
-                "poll_interval_seconds": 90,
-            },
-            "notification": {
-                "cooldown_minutes": 60,
-                "min_score_to_alert": 72,
-                "max_alerts_per_day": 4,
-                "min_price_move_percent_for_repeat": 1.8,
-            },
-            "rules": {
-                "near_buy_score": 72,
-                "buy_trigger_score": 88,
-                "pullback_max_atr_distance": 0.55,
-                "breakout_volume_multiple": 1.55,
-                "max_extension_atr": 1.15,
-                "stop_atr_multiplier": 1.5,
-                "position_size_hint": "10%-15%",
-            },
-        },
-    },
-}
-
-
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return module_utc_now_iso()
 
 
 def local_today() -> str:
-    return datetime.now().date().isoformat()
+    return module_local_today()
 
 
 def local_hour() -> int:
-    return datetime.now().hour
+    return module_local_hour()
 
 
 def local_minute_of_day() -> int:
-    now = datetime.now()
-    return now.hour * 60 + now.minute
+    return module_local_minute_of_day()
 
 
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def deep_merge(base: Any, override: Any) -> Any:
-    if isinstance(base, dict) and isinstance(override, dict):
-        merged = deepcopy(base)
-        for key, value in override.items():
-            merged[key] = deep_merge(merged.get(key), value)
-        return merged
-    return deepcopy(override)
-
-
-def load_json_file(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return deepcopy(default)
-    return json.loads(path.read_text())
-
-
 def save_json_file(path: Path, payload: Any) -> None:
     ensure_parent(path)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-
-
-def apply_strategy_profile(config: dict[str, Any]) -> dict[str, Any]:
-    profile_name = str(config.get("strategy_profile", "balanced"))
-    profile = config.get("profiles", {}).get(profile_name, {})
-    merged = deep_merge(config, profile)
-    merged["strategy_profile"] = profile_name
-    return merged
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -678,10 +501,6 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
     return module_ensure_state_defaults(state)
 
 
-def fetch_json(base_path: str, params: dict[str, Any], timeout_seconds: int) -> Any:
-    return module_fetch_json(base_path, params, timeout_seconds)
-
-
 def fetch_price(symbol: str, timeout_seconds: int) -> float:
     return module_fetch_price(symbol, timeout_seconds)
 
@@ -690,92 +509,8 @@ def fetch_klines(symbol: str, interval: str, limit: int, timeout_seconds: int) -
     return module_fetch_klines(symbol, interval, limit, timeout_seconds)
 
 
-def ema_series(values: list[float], period: int) -> list[float]:
-    if not values:
-        return []
-    multiplier = 2.0 / (period + 1.0)
-    result = [values[0]]
-    for value in values[1:]:
-        result.append((value - result[-1]) * multiplier + result[-1])
-    return result
-
-
-def rsi_series(values: list[float], period: int = 14) -> list[float]:
-    if len(values) < 2:
-        return [50.0 for _ in values]
-    gains = [0.0]
-    losses = [0.0]
-    for prev, current in zip(values[:-1], values[1:]):
-        delta = current - prev
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
-    rsis = [50.0 for _ in values]
-    avg_gain = sum(gains[1 : period + 1]) / period if len(gains) > period else 0.0
-    avg_loss = sum(losses[1 : period + 1]) / period if len(losses) > period else 0.0
-    for idx in range(period, len(values)):
-        if idx > period:
-            avg_gain = ((avg_gain * (period - 1)) + gains[idx]) / period
-            avg_loss = ((avg_loss * (period - 1)) + losses[idx]) / period
-        if avg_loss == 0:
-            rsis[idx] = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            rsis[idx] = 100.0 - (100.0 / (1.0 + rs))
-    return rsis
-
-
-def atr_series(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> list[float]:
-    if not closes:
-        return []
-    tr_values = [highs[0] - lows[0]]
-    for idx in range(1, len(closes)):
-        tr_values.append(
-            max(
-                highs[idx] - lows[idx],
-                abs(highs[idx] - closes[idx - 1]),
-                abs(lows[idx] - closes[idx - 1]),
-            )
-        )
-    atr_values = [tr_values[0]]
-    for idx in range(1, len(tr_values)):
-        if idx < period:
-            atr_values.append(sum(tr_values[: idx + 1]) / (idx + 1))
-        else:
-            atr_values.append(((atr_values[-1] * (period - 1)) + tr_values[idx]) / period)
-    return atr_values
-
-
-def macd_hist_series(values: list[float]) -> list[float]:
-    ema12 = ema_series(values, 12)
-    ema26 = ema_series(values, 26)
-    macd_line = [a - b for a, b in zip(ema12, ema26)]
-    signal_line = ema_series(macd_line, 9)
-    return [a - b for a, b in zip(macd_line, signal_line)]
-
-
 def enrich_candles(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    closes = [c["close"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    ema20 = ema_series(closes, 20)
-    ema50 = ema_series(closes, 50)
-    rsi14 = rsi_series(closes, 14)
-    atr14 = atr_series(highs, lows, closes, 14)
-    macd_hist = macd_hist_series(closes)
-    enriched: list[dict[str, Any]] = []
-    for idx, candle in enumerate(candles):
-        item = dict(candle)
-        item["ema20"] = ema20[idx]
-        item["ema50"] = ema50[idx]
-        item["rsi14"] = rsi14[idx]
-        item["atr14"] = atr14[idx]
-        item["macd_hist"] = macd_hist[idx]
-        enriched.append(item)
-    return enriched
-
-
-def average(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+    return module_enrich_candles(candles)
 
 
 def fmt_price(value: float) -> str:
@@ -858,74 +593,13 @@ def clamp(value: float, low: float, high: float) -> float:
 
 
 def parse_hhmm(value: str) -> int:
-    hour_str, minute_str = value.split(":", 1)
-    return int(hour_str) * 60 + int(minute_str)
+    return module_parse_hhmm(value)
 
 
 def percent_change(a: float, b: float) -> float:
     if a == 0:
         return 0.0
     return ((b - a) / a) * 100.0
-
-
-def ema_slope_up(candles: list[dict[str, Any]], key: str, lookback: int) -> bool:
-    if len(candles) <= lookback:
-        return False
-    return candles[-1][key] > candles[-1 - lookback][key]
-
-
-def add_reason(reasons: list[str], condition: bool, text: str) -> None:
-    if condition:
-        reasons.append(text)
-
-
-def build_signal_payload(
-    *,
-    name: str,
-    score: int,
-    reasons: list[str],
-    stop_loss: float,
-    entry_hint: str,
-    entry_zone: str,
-    entry_reference: float,
-    position_size_hint: str,
-    entry_kind: str = "reference",
-    entry_low: float | None = None,
-    entry_high: float | None = None,
-    entry_trigger: float | None = None,
-) -> dict[str, Any]:
-    payload = {
-        "name": name,
-        "score": score,
-        "reasons": reasons[:6],
-        "stop_loss": round(stop_loss, 2),
-        "entry_hint": entry_hint,
-        "entry_zone": entry_zone,
-        "entry_reference": round(entry_reference, 2),
-        "position_size_hint": position_size_hint,
-        "entry_kind": entry_kind,
-    }
-    if entry_low is not None:
-        payload["entry_low"] = round(entry_low, 2)
-    if entry_high is not None:
-        payload["entry_high"] = round(entry_high, 2)
-    if entry_trigger is not None:
-        payload["entry_trigger"] = round(entry_trigger, 2)
-    return payload
-
-
-def build_take_profit(entry_reference: float, stop_loss: float, rules: dict[str, Any]) -> dict[str, float]:
-    risk = max(entry_reference - stop_loss, 0.01)
-    tp1 = entry_reference + risk * float(rules["take_profit_rr_1"])
-    tp2 = entry_reference + risk * float(rules["take_profit_rr_2"])
-    return {
-        "entry_reference": round(entry_reference, 2),
-        "risk_per_unit": round(risk, 2),
-        "tp1": round(tp1, 2),
-        "tp2": round(tp2, 2),
-        "rr_to_tp1": round((tp1 - entry_reference) / risk, 2),
-        "rr_to_tp2": round((tp2 - entry_reference) / risk, 2),
-    }
 
 
 def analyze_market(config: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1863,10 +1537,6 @@ def send_daily_summary(analysis: dict[str, Any], state: dict[str, Any], config: 
         "reason": llm_reason,
     }
     return True, llm_reason
-
-
-def signal_rank(label: str) -> int:
-    return module_signal_rank(label)
 
 
 def compact_alert_history(state: dict[str, Any]) -> None:
