@@ -10,6 +10,28 @@ backtests, and chart generation.
 When updating project documentation, keep `README.md` and
 `README.zh-CN.md` in sync.
 
+## Signal Flow
+
+```mermaid
+sequenceDiagram
+    participant Exchange as Binance/CCXT
+    participant Watcher as ETH Watcher
+    participant Indicators as Indicators
+    participant Rules as Rule Engine
+    participant Model as XGBoost Model
+    participant OpenClaw as OpenClaw/iMessage
+
+    Exchange->>Watcher: Provide latest ETH price and candles
+    Watcher->>Indicators: Build EMA, RSI, ATR, MACD, volume features
+    Indicators-->>Watcher: Return market structure and momentum data
+    Watcher->>Rules: Score pullback, breakout, and reversal setups
+    Rules-->>Watcher: Return primary rule-based signal
+    Watcher->>Model: Request buy/hold/sell probabilities
+    Model-->>Watcher: Return ML confirmation or disagreement
+    Watcher->>Watcher: Merge rule score, ML bias, and risk checks
+    Watcher->>OpenClaw: Send buy, probe-buy, wait, reduce, hold, or sell message
+```
+
 ## What It Includes
 
 - Rule-based ETH setup detection on `5m`, `15m`, `1h`, and `4h`
