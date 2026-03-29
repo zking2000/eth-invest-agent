@@ -296,6 +296,8 @@ def load_state(path: Path) -> dict[str, Any]:
                 "daily_summary": {
                     "sent_keys": [],
                     "last_llm_usage": {},
+                    "audit_history": [],
+                    "last_audit": {},
                 },
             },
         )
@@ -328,6 +330,8 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
         {
             "sent_keys": [],
             "last_llm_usage": {},
+            "audit_history": [],
+            "last_audit": {},
         },
     )
     chat = state["chat"]
@@ -342,6 +346,12 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
     daily_summary["sent_keys"] = [str(item) for item in sent_keys[-30:] if str(item)]
     if not isinstance(daily_summary.get("last_llm_usage"), dict):
         daily_summary["last_llm_usage"] = {}
+    audit_history = daily_summary.get("audit_history", [])
+    if not isinstance(audit_history, list):
+        audit_history = []
+    daily_summary["audit_history"] = [item for item in audit_history[-30:] if isinstance(item, dict)]
+    if not isinstance(daily_summary.get("last_audit"), dict):
+        daily_summary["last_audit"] = {}
     return state
 
 
@@ -1521,6 +1531,19 @@ def extract_openclaw_agent_text(payload: dict[str, Any]) -> str:
     return "\n".join(texts).strip()
 
 
+def extract_message_send_metadata(result: subprocess.CompletedProcess[str]) -> dict[str, str]:
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except Exception:
+        return {}
+    message_payload = payload.get("payload", {}) if isinstance(payload, dict) else {}
+    delivery_result = message_payload.get("result", {}) if isinstance(message_payload, dict) else {}
+    return {
+        "target": str(message_payload.get("to") or ""),
+        "message_id": str(delivery_result.get("messageId") or ""),
+    }
+
+
 def call_openclaw_llm_summary(prompt: str, config: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
     summary_cfg = config.get("notification", {}).get("daily_summary", {})
     command = [
@@ -1598,6 +1621,7 @@ def send_daily_summary(analysis: dict[str, Any], state: dict[str, Any], config: 
         except Exception as exc:
             llm_reason = f"llm failed: {exc}"
     message = llm_text or build_local_daily_summary(analysis, state, locale)
+    daily_state = state.setdefault("daily_summary", {})
     media_path: Path | None = None
     if should_attach_chart(config) and summary_cfg.get("attach_chart", True):
         chart_cfg = config["notification"]["chart"]
@@ -1614,10 +1638,32 @@ def send_daily_summary(analysis: dict[str, Any], state: dict[str, Any], config: 
             locale,
         )
     result = send_imessage(config, message, dry_run=dry_run, media_path=media_path)
+    send_metadata = extract_message_send_metadata(result)
+    audit_entry = {
+        "ts": utc_now_iso(),
+        "send_key": send_key,
+        "status": "sent" if result.returncode == 0 else "failed",
+        "channel": str(config.get("notification", {}).get("channel", "")),
+        "target": send_metadata.get("target") or str(config.get("notification", {}).get("target", "")),
+        "locale": locale,
+        "used_llm": bool(llm_text),
+        "llm_reason": llm_reason,
+        "usage": usage,
+        "attach_chart": bool(media_path),
+        "message_id": send_metadata.get("message_id", ""),
+        "detail": (
+            llm_reason
+            if result.returncode == 0
+            else (result.stderr.strip() or result.stdout.strip() or "daily summary send failed")
+        )[:280],
+    }
+    audit_history = [item for item in daily_state.get("audit_history", []) if isinstance(item, dict)]
+    audit_history.append(audit_entry)
+    daily_state["audit_history"] = audit_history[-30:]
+    daily_state["last_audit"] = audit_entry
     if result.returncode != 0:
         print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr, flush=True)
         return False, "daily summary send failed"
-    daily_state = state.setdefault("daily_summary", {})
     sent_keys = [str(item) for item in daily_state.get("sent_keys", []) if str(item)]
     sent_keys.append(send_key)
     daily_state["sent_keys"] = sent_keys[-30:]

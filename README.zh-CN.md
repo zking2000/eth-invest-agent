@@ -220,6 +220,8 @@ python3 ./scripts/eth_watcher.py position-status
 python3 ./scripts/eth_watcher.py position-close
 ```
 
+如果你不想长期挂一个独立 daemon，也可以改用 `OpenClaw cron` 每分钟执行一次 watcher。
+
 你也可以显式指定项目根目录：
 
 ```bash
@@ -309,7 +311,7 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
         "name": "ETH Daily Summary",
         "workspace": "/path/to/a/small/separate/workspace",
         "model": {
-          "primary": "yinli/claude-sonnet-4-6",
+          "primary": "ollama/qwen2.5-coder:7b",
           "fallbacks": []
         },
         "thinkingDefault": "off"
@@ -323,7 +325,15 @@ python3 "$ETH_AGENT_HOME/scripts/eth_watcher.py" snapshot
 
 - 如果直接走 `main`，每日摘要请求可能会带上较大的主工作区上下文
 - 单独的轻量 agent 可以明显降低单次日报的 token 消耗
+- 把 `eth-daily-summary` 切到本地模型，还可以进一步降低 API 成本
 - 改完 `~/.openclaw/openclaw.json` 后，记得执行 `openclaw gateway restart`
+
+每日摘要审计日志：
+
+- watcher 会把最近一次每日日报发送审计写入 `state/runtime.json`
+- 查看 `daily_summary.last_audit` 可以看到最近一次发送尝试
+- 查看 `daily_summary.audit_history` 可以看到最近若干次发送记录
+- 每条审计会记录发送时间、目标、语言、成功或失败状态、LLM 使用情况，以及可用时的消息 id
 
 ## 策略档位
 
@@ -362,6 +372,59 @@ ETH_AGENT_HOME="$HOME/.clawdbot/apps/eth-invest-agent" "$HOME/.clawdbot/apps/eth
 
 - 一个目录专门用于编辑源码
 - 另一个稳定目录专门用于后台运行
+
+## OpenClaw Cron 模式
+
+你也可以不用长期运行 daemon，而改成用 `OpenClaw cron` 每分钟执行一次 watcher。
+
+推荐方式：
+
+- `eth-chat` 聊天问答继续保留
+- 关闭原来的 `launchd daemon`
+- 新建一个每分钟执行 `run-once --send` 的 cron job
+- 给 cron 单独使用一个轻量 agent
+
+`~/.openclaw/openclaw.json` 中的 cron agent 示例：
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "eth-watcher-cron",
+        "name": "ETH Watcher Cron",
+        "workspace": "/path/to/a/separate/cron-workspace",
+        "model": {
+          "primary": "ollama/qwen2.5-coder:7b",
+          "fallbacks": []
+        },
+        "thinkingDefault": "off"
+      }
+    ]
+  }
+}
+```
+
+cron job 示例：
+
+```bash
+openclaw cron add \
+  --name "eth-watcher-minute" \
+  --every 1m \
+  --session isolated \
+  --agent eth-watcher-cron \
+  --light-context \
+  --no-deliver \
+  --message "Use the exec tool exactly once. Run this command on the gateway host and do nothing else: /bin/zsh -lc 'export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; /usr/bin/python3 \"/Users/you/.clawdbot/apps/eth-invest-agent/scripts/eth_watcher.py\" --config \"/Users/you/.clawdbot/apps/eth-invest-agent/config.json\" --state \"/Users/you/.clawdbot/apps/eth-invest-agent/state/runtime.json\" run-once --send'. After the command finishes, emit one short plain-text status line with the exit code and the key stdout or stderr result."
+```
+
+常用命令：
+
+- `openclaw cron list`
+- `openclaw cron runs --id <job-id>`
+- `openclaw cron run <job-id>`
+
+如果切到 cron 模式，不要让旧 daemon 同时继续运行，否则 watcher 可能会被重复执行。
 
 ## 仓库结构
 

@@ -230,6 +230,9 @@ python3 ./scripts/eth_watcher.py position-status
 python3 ./scripts/eth_watcher.py position-close
 ```
 
+If you prefer not to keep a separate daemon running, you can also use
+`OpenClaw cron` to run the watcher every minute instead.
+
 You can also set the project root explicitly:
 
 ```bash
@@ -319,7 +322,7 @@ Example `~/.openclaw/openclaw.json` agent snippet:
         "name": "ETH Daily Summary",
         "workspace": "/path/to/a/small/separate/workspace",
         "model": {
-          "primary": "yinli/claude-sonnet-4-6",
+          "primary": "ollama/qwen2.5-coder:7b",
           "fallbacks": []
         },
         "thinkingDefault": "off"
@@ -333,7 +336,15 @@ Why this matters:
 
 - using `main` may inject a large coding workspace context into each daily summary call
 - a dedicated lightweight agent can reduce token usage significantly
+- using a local model for `eth-daily-summary` can reduce API cost further
 - after editing `~/.openclaw/openclaw.json`, run `openclaw gateway restart`
+
+Daily summary audit trail:
+
+- the watcher stores the latest daily summary delivery audit in `state/runtime.json`
+- check `daily_summary.last_audit` for the most recent send attempt
+- check `daily_summary.audit_history` for recent send history
+- each audit entry includes the send time, target, locale, success/failure status, LLM usage, and message id when available
 
 ## Strategy Profiles
 
@@ -375,6 +386,61 @@ This is useful if you want:
 
 - one directory for editing source code
 - one stable directory for the background service
+
+## OpenClaw Cron Mode
+
+You can replace the long-running daemon with an `OpenClaw cron` job that runs
+the watcher every minute.
+
+Recommended setup:
+
+- keep chat replies via `eth-chat` as-is
+- disable the `launchd` daemon
+- add one cron job that runs `run-once --send` every minute
+- use a separate lightweight agent for the cron job
+
+Example cron agent snippet in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "eth-watcher-cron",
+        "name": "ETH Watcher Cron",
+        "workspace": "/path/to/a/separate/cron-workspace",
+        "model": {
+          "primary": "ollama/qwen2.5-coder:7b",
+          "fallbacks": []
+        },
+        "thinkingDefault": "off"
+      }
+    ]
+  }
+}
+```
+
+Example cron job:
+
+```bash
+openclaw cron add \
+  --name "eth-watcher-minute" \
+  --every 1m \
+  --session isolated \
+  --agent eth-watcher-cron \
+  --light-context \
+  --no-deliver \
+  --message "Use the exec tool exactly once. Run this command on the gateway host and do nothing else: /bin/zsh -lc 'export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; /usr/bin/python3 \"/Users/you/.clawdbot/apps/eth-invest-agent/scripts/eth_watcher.py\" --config \"/Users/you/.clawdbot/apps/eth-invest-agent/config.json\" --state \"/Users/you/.clawdbot/apps/eth-invest-agent/state/runtime.json\" run-once --send'. After the command finishes, emit one short plain-text status line with the exit code and the key stdout or stderr result."
+```
+
+Useful commands:
+
+- `openclaw cron list`
+- `openclaw cron runs --id <job-id>`
+- `openclaw cron run <job-id>`
+
+If you switch to cron mode, do not keep the old daemon running at the same time,
+or you may execute the watcher twice.
 
 ## Repository Layout
 
