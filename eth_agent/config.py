@@ -79,6 +79,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "display": {
         "price_currency": "CNY",
         "usd_cny_rate": 7.20,
+        "use_live_fx": True,
+        "live_fx_cache_minutes": 60,
     },
     "notification": {
         "enabled": True,

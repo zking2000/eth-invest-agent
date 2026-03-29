@@ -42,7 +42,9 @@ cp config.sample.json config.local.json
 {
   "display": {
     "price_currency": "CNY",
-    "usd_cny_rate": 7.2
+    "usd_cny_rate": 7.2,
+    "use_live_fx": true,
+    "live_fx_cache_minutes": 60
   },
   "notification": {
     "enabled": true,
@@ -65,7 +67,8 @@ cp config.sample.json config.local.json
 - `USD`：消息中的价格按美元展示
 
 当启用 `CNY` 后，提醒、问答、跟踪消息、每日日报和 `snapshot` 输出中的价格都会
-统一按人民币展示。
+统一按人民币展示。现在默认会优先拉取实时 USD/CNY 汇率并本地缓存；如果汇率接口
+暂时不可用，才会回退到 `usd_cny_rate`。
 
 ## 快速开始
 
@@ -319,7 +322,9 @@ rg "Registered hook: eth-chat|eth-chat" ~/.openclaw/logs/gateway.log
 {
   "display": {
     "price_currency": "CNY",
-    "usd_cny_rate": 7.2
+    "usd_cny_rate": 7.2,
+    "use_live_fx": true,
+    "live_fx_cache_minutes": 60
   },
   "notification": {
     "reply_language": "zh",
@@ -368,7 +373,9 @@ OpenClaw 的 hook / 默认 cron 已启用后，每日日报链路就是：
 - `symbol`：默认 `ETHUSDT`
 - `strategy_profile`：`scalp`、`balanced`、`swing`
 - `display.price_currency`：面向用户显示价格时使用 `CNY` 或 `USD`
-- `display.usd_cny_rate`：显示人民币时使用的美元兑人民币汇率
+- `display.usd_cny_rate`：实时汇率不可用时使用的美元兑人民币兜底汇率
+- `display.use_live_fx`：人民币显示时是否优先拉取实时 USD/CNY 汇率
+- `display.live_fx_cache_minutes`：实时汇率在本地缓存的分钟数
 - `notification.*`：提醒、跟踪、问答、每日日报相关行为
 - `notification.reply_language`：所有外发消息使用 `zh` 或 `en`
 - `ml.enabled`：是否启用模型辅助实时评分

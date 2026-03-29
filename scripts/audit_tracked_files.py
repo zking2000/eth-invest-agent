@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST_SUBSTRINGS = {
     "your-imessage-handle",
     "/path/to/eth-invest-agent",
+    r're.compile(r"/Users/[^/\s]+")',
 }
 
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [

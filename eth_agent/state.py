@@ -10,6 +10,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "last_sent": {},
     "last_analysis": {},
     "alert_history": [],
+    "display": {"fx_cache": {}},
     "tracking": {},
     "position": {
         "active": False,
@@ -32,6 +33,7 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("last_sent", {})
     state.setdefault("last_analysis", {})
     state.setdefault("alert_history", [])
+    state.setdefault("display", {"fx_cache": {}})
     state.setdefault("tracking", {})
     state.setdefault(
         "position",
@@ -53,6 +55,12 @@ def ensure_state_defaults(state: dict[str, Any]) -> dict[str, Any]:
             "last_audit": {},
         },
     )
+    display = state["display"]
+    if not isinstance(display, dict):
+        display = {}
+        state["display"] = display
+    if not isinstance(display.get("fx_cache"), dict):
+        display["fx_cache"] = {}
     chat = state["chat"]
     processed_ids = chat.get("processed_message_ids", [])
     if not isinstance(processed_ids, list):

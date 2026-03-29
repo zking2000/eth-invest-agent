@@ -8,7 +8,9 @@
   },
   "display": {
     "price_currency": "CNY",
-    "usd_cny_rate": 7.2
+    "usd_cny_rate": 7.2,
+    "use_live_fx": true,
+    "live_fx_cache_minutes": 60
   },
   "notification": {
     "enabled": false,

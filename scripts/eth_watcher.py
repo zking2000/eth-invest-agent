@@ -91,6 +91,19 @@ def resolve_openclaw_bin() -> str:
     return "/opt/homebrew/bin/openclaw"
 
 
+def fetch_live_usd_cny_rate(timeout_seconds: int = 12) -> tuple[float, str]:
+    request = urllib.request.Request(
+        "https://open.er-api.com/v6/latest/USD",
+        headers={"User-Agent": "eth-invest-agent/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=max(int(timeout_seconds), 3)) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    rate = float(payload.get("rates", {}).get("CNY", 0.0))
+    if not isfinite(rate) or rate <= 0:
+        raise RuntimeError("live USD/CNY rate missing from response")
+    return rate, str(payload.get("provider", "open.er-api.com"))
+
+
 def build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     path_parts: list[str] = []
@@ -531,14 +544,72 @@ def build_display_settings(config: dict[str, Any] | None = None) -> dict[str, An
         usd_cny_rate = 7.2
     if usd_cny_rate <= 0:
         usd_cny_rate = 7.2
+    use_live_fx = bool(display_cfg.get("use_live_fx", True))
+    try:
+        fx_cache_minutes = max(int(display_cfg.get("live_fx_cache_minutes", 60)), 5)
+    except Exception:
+        fx_cache_minutes = 60
+    fx_source = "config"
+    fx_updated_at = ""
+    if currency == "CNY" and use_live_fx:
+        display_state = {}
+        if isinstance(config, dict):
+            state = config.get("_runtime_state")
+            if isinstance(state, dict):
+                display_state = state.setdefault("display", {})
+        cache = display_state.get("fx_cache", {}) if isinstance(display_state.get("fx_cache"), dict) else {}
+        cache_rate = cache.get("usd_cny_rate")
+        cache_ts = cache.get("fetched_at_ts")
+        now_ts = time.time()
+        cache_valid = False
+        try:
+            cache_rate_value = float(cache_rate)
+            cache_ts_value = float(cache_ts)
+            cache_valid = cache_rate_value > 0 and (now_ts - cache_ts_value) <= fx_cache_minutes * 60
+        except Exception:
+            cache_valid = False
+        if cache_valid:
+            usd_cny_rate = cache_rate_value
+            fx_source = str(cache.get("source", "live-cache"))
+            fx_updated_at = str(cache.get("fetched_at", ""))
+        else:
+            try:
+                timeout_seconds = int((config or {}).get("runtime", {}).get("http_timeout_seconds", 12))
+                live_rate, source = fetch_live_usd_cny_rate(timeout_seconds=timeout_seconds)
+                usd_cny_rate = live_rate
+                fx_source = source
+                fx_updated_at = utc_now_iso()
+                display_state["fx_cache"] = {
+                    "usd_cny_rate": live_rate,
+                    "fetched_at": fx_updated_at,
+                    "fetched_at_ts": now_ts,
+                    "source": source,
+                }
+            except Exception:
+                try:
+                    cache_rate_value = float(cache_rate)
+                    if cache_rate_value > 0:
+                        usd_cny_rate = cache_rate_value
+                        fx_source = str(cache.get("source", "stale-cache"))
+                        fx_updated_at = str(cache.get("fetched_at", ""))
+                except Exception:
+                    fx_source = "config"
     return {
         "price_currency": currency,
         "usd_cny_rate": usd_cny_rate,
+        "use_live_fx": use_live_fx,
+        "live_fx_cache_minutes": fx_cache_minutes,
+        "fx_source": fx_source,
+        "fx_updated_at": fx_updated_at,
     }
 
 
-def attach_display_settings(analysis: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def attach_display_settings(analysis: dict[str, Any], config: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+    if state is not None:
+        config["_runtime_state"] = state
     analysis["display"] = build_display_settings(config)
+    if state is not None:
+        config.pop("_runtime_state", None)
     return analysis
 
 
@@ -1664,6 +1735,18 @@ def print_text_snapshot(analysis: dict[str, Any], locale: str) -> None:
     print(json.dumps(signal_scores, indent=2, ensure_ascii=False), flush=True)
 
 
+def sync_display_state(state: dict[str, Any], analysis: dict[str, Any]) -> None:
+    display_state = state.setdefault("display", {})
+    if not isinstance(display_state, dict):
+        display_state = {}
+        state["display"] = display_state
+    fx_cache = display_state.get("fx_cache", {}) if isinstance(display_state.get("fx_cache"), dict) else {}
+    display_state.clear()
+    display_state.update(analysis.get("display", {}))
+    if fx_cache:
+        display_state["fx_cache"] = fx_cache
+
+
 def run_chat_query(
     config_path: Path,
     state_path: Path,
@@ -1685,7 +1768,7 @@ def run_chat_query(
         return 0
 
     try:
-        analysis = attach_display_settings(maybe_enrich_analysis_with_ml(analyze_market(config, state), config), config)
+        analysis = attach_display_settings(maybe_enrich_analysis_with_ml(analyze_market(config, state), config), config, state)
     except Exception as exc:
         state["last_analysis"] = {
             "generated_at": utc_now_iso(),
@@ -1697,7 +1780,7 @@ def run_chat_query(
         print(json.dumps({"matched": True, "reply": reply}, ensure_ascii=False), flush=True)
         return 0
 
-    state["display"] = analysis.get("display", {})
+    sync_display_state(state, analysis)
     state["last_analysis"] = analysis
     reply = build_chat_reply(message, analysis, state, locale)
     if not reply:
@@ -1716,7 +1799,7 @@ def run_once(config_path: Path, state_path: Path, send: bool, dry_run: bool) -> 
     locale = get_reply_language(config)
     state = load_state(state_path)
     try:
-        analysis = attach_display_settings(maybe_enrich_analysis_with_ml(analyze_market(config, state), config), config)
+        analysis = attach_display_settings(maybe_enrich_analysis_with_ml(analyze_market(config, state), config), config, state)
     except Exception as exc:
         state["last_analysis"] = {
             "generated_at": utc_now_iso(),
@@ -1727,7 +1810,7 @@ def run_once(config_path: Path, state_path: Path, send: bool, dry_run: bool) -> 
         print(f"ETH watcher error: {exc}", file=sys.stderr, flush=True)
         return 1
 
-    state["display"] = analysis.get("display", {})
+    sync_display_state(state, analysis)
     state["last_analysis"] = analysis
     clear_tracking_if_expired(state)
 

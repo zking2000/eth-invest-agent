@@ -45,7 +45,9 @@ Then update `config.local.json`:
 {
   "display": {
     "price_currency": "CNY",
-    "usd_cny_rate": 7.2
+    "usd_cny_rate": 7.2,
+    "use_live_fx": true,
+    "live_fx_cache_minutes": 60
   },
   "notification": {
     "enabled": true,
@@ -69,7 +71,9 @@ and the target is blank by default.
 - `USD` to show message prices in USD
 
 When `CNY` is enabled, watcher alerts, chat replies, follow-up messages, daily
-summaries, and snapshot output all display price levels in RMB.
+summaries, and snapshot output all display price levels in RMB. By default, the
+watcher now fetches a live USD/CNY rate and caches it locally; `usd_cny_rate`
+acts as a fallback if the FX endpoint is temporarily unavailable.
 
 ## Quick Start
 
@@ -328,7 +332,9 @@ Example daily summary config:
 {
   "display": {
     "price_currency": "CNY",
-    "usd_cny_rate": 7.2
+    "usd_cny_rate": 7.2,
+    "use_live_fx": true,
+    "live_fx_cache_minutes": 60
   },
   "notification": {
     "reply_language": "zh",
@@ -378,7 +384,9 @@ an optional manual fallback for local experiments.
 - `symbol`: default `ETHUSDT`
 - `strategy_profile`: `scalp`, `balanced`, or `swing`
 - `display.price_currency`: `CNY` or `USD` for user-facing price output
-- `display.usd_cny_rate`: FX conversion used when showing RMB prices
+- `display.usd_cny_rate`: fallback FX conversion used when live RMB pricing is unavailable
+- `display.use_live_fx`: whether RMB display should fetch a live USD/CNY rate
+- `display.live_fx_cache_minutes`: how long the live FX rate is cached locally
 - `notification.*`: alert, follow-up, chat, and daily summary behavior
 - `notification.reply_language`: `zh` or `en` for all outbound messages
 - `ml.enabled`: whether live watcher tries model-assisted scoring
