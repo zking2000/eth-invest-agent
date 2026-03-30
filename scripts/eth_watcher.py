@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import math
+import re
 import signal
 import shutil
 import subprocess
@@ -1456,14 +1457,31 @@ def build_local_daily_summary(analysis: dict[str, Any], state: dict[str, Any], l
 
 
 def extract_openclaw_agent_text(payload: dict[str, Any]) -> str:
-    result = payload.get("result", {})
-    payloads = result.get("payloads", [])
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    payloads = result.get("payloads")
+    if not isinstance(payloads, list):
+        payloads = payload.get("payloads", [])
     texts: list[str] = []
     for item in payloads:
+        if not isinstance(item, dict):
+            continue
         text = str(item.get("text") or "").strip()
         if text:
             texts.append(text)
     return "\n".join(texts).strip()
+
+
+def parse_openclaw_agent_payload(stdout: str) -> dict[str, Any]:
+    raw = str(stdout or "").strip()
+    if not raw:
+        raise RuntimeError("openclaw agent returned empty stdout")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"(\{[\s\S]*\})\s*$", raw)
+        if not match:
+            raise
+        return json.loads(match.group(1))
 
 
 def extract_message_send_metadata(result: subprocess.CompletedProcess[str]) -> dict[str, str]:
@@ -1494,6 +1512,8 @@ def call_openclaw_llm_summary(prompt: str, config: dict[str, Any]) -> tuple[str 
         "--timeout",
         str(int(summary_cfg.get("llm_timeout_seconds", 120))),
     ]
+    if bool(summary_cfg.get("use_local_agent", False)):
+        command.append("--local")
     result = subprocess.run(
         command,
         capture_output=True,
@@ -1504,9 +1524,15 @@ def call_openclaw_llm_summary(prompt: str, config: dict[str, Any]) -> tuple[str 
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "openclaw agent call failed")
-    payload = json.loads(result.stdout)
+    raw_output = result.stdout if str(result.stdout or "").strip() else result.stderr
+    payload = parse_openclaw_agent_payload(raw_output)
     text = extract_openclaw_agent_text(payload)
-    usage = payload.get("result", {}).get("meta", {}).get("agentMeta", {}).get("lastCallUsage", {}) or payload.get("result", {}).get("meta", {}).get("agentMeta", {}).get("usage", {}) or {}
+    result_payload = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    meta_payload = result_payload.get("meta", {}) if isinstance(result_payload.get("meta"), dict) else {}
+    if not meta_payload and isinstance(payload.get("meta"), dict):
+        meta_payload = payload.get("meta", {})
+    agent_meta = meta_payload.get("agentMeta", {}) if isinstance(meta_payload.get("agentMeta"), dict) else {}
+    usage = agent_meta.get("lastCallUsage", {}) or agent_meta.get("usage", {}) or {}
     if not text:
         raise RuntimeError("llm returned empty summary")
     return text, usage
